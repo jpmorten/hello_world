@@ -41,7 +41,23 @@ Build is proceeding per the staged build order. Completed so far:
    `PARENT_AGENT_ID`, `PARENT_SPAN_ID`, `LOG_DIR`) are the contract
    step 4's spawn engine will set when it launches each agent.
 
-Not built yet: spawn/budget engine, domain/worker agents, real adapters,
+4. **Spawn/budget engine** — `engine/spawn.py`: `SpawnManager` tracks
+   lineage (agent_id/span_id/parent chain), enforces the tier-2 depth cap
+   (a Tier 2 worker can never become a parent — the resulting tier would
+   be 3, over the cap), refuses duplicate `(domain, target_ref)` spawns
+   within a run, and gives each Tier 1 domain its own concurrency
+   sub-budget (`allocate_sub_budgets` does the proportional, deterministic
+   split of a global `max_concurrent` across domain weights). A domain at
+   its budget ceiling queues further spawns instead of failing them, and
+   `budget_exhausted` is logged once per domain, not once per queued
+   request. `heartbeat()`/`check_liveness()` detect a hung agent purely by
+   heartbeat age — an agent is reported stalled (once) and its slot freed
+   for the next queued worker. `trigger_kill_switch()` is idempotent,
+   blocks all further spawns, and returns the agent_ids that were running
+   at the moment of the trigger so the caller can terminate/flush them.
+   Every decision streams through the step-2 logbus as it happens.
+
+Not built yet: domain/worker agent definitions, real adapters,
 dedupe/correlation/risk scoring, reports.
 
 ## Running the tests
