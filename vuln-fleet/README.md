@@ -107,8 +107,40 @@ Build is proceeding per the staged build order. Completed so far:
    full 9-domain sweep against the example inventory now runs end-to-end
    with zero coverage gaps.
 
-Not built yet: real (non-mock) adapters, cross-domain correlation and
-risk scoring, baseline delta, the full report suite.
+7. **First real, read-only adapters** — `adapters/cve_intel.py` and
+   `adapters/osv.py` are genuinely real, live integrations against public,
+   unauthenticated intelligence feeds: CISA's KEV catalog, FIRST.org's
+   EPSS API, NVD's CVSS data, and OSV.dev's dependency-vulnerability
+   database. Each has exactly one HTTP seam (`_http_get_json` /
+   `_http_post_json`) that's a real network call by default and the one
+   thing tests monkeypatch with frozen fixture data to stay hermetic —
+   the same pattern `SyslogSink`/`WebhookSink` used back in step 2.
+   `adapters/supply_chain.py` combines them into the real replacement for
+   `adapters/mock/supply_chain.py` in `engine/domains.py`'s registry (the
+   mock stays in the repo; it's still what the step-5 test exercises
+   directly). What's *not* real yet is the SBOM inventory itself — a
+   small local package manifest stands in for a real SBOM-store/CMDB
+   adapter — so this step's real value is specifically the vulnerability
+   *lookup*, not a fabricated finding count.
+
+   Verified against live data, not just fixtures: `supply_chain.scan()`
+   run against `repo:stibo/checkout`'s one example package
+   (`lodash@4.17.15`) returns the real current OSV.dev advisories for it
+   (6, at time of writing) with real CVE ids, EPSS scores, and CVSS
+   scores; `cve_intel.enrich_cve("CVE-2021-44228")` (Log4Shell) correctly
+   comes back KEV-listed / `known_exploited` against the live CISA feed.
+   That live check caught a real bug before it shipped: CISA's KEV feed's
+   WAF 403s a User-Agent containing the phrase "security scanner"
+   specifically (confirmed by direct A/B curl testing), which was silently
+   swallowed by this module's own by-design graceful degradation (a
+   source failure reads as "not KEV-listed," not a crash) — exactly the
+   failure mode that's dangerous to get silently wrong. Fixed by using a
+   contact-URL-style User-Agent instead, and added a one-retry-with-backoff
+   to both HTTP seams so a single transient block or rate limit doesn't
+   read as clean.
+
+Not built yet: real adapters for the other 8 domains, cross-domain
+correlation and risk scoring, baseline delta, the full report suite.
 
 ## Running the tests
 

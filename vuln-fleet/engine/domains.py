@@ -5,17 +5,20 @@ exactly one entry here plus, for a live Claude Code fleet, a matching
 `.claude/agents/<domain>.md` subagent definition — no change to
 engine/orchestrator.py's control flow, which stays domain-agnostic.
 
-Every `adapter_fn` here is a mock (adapters/mock/*.py, per step 5); step 7
-replaces these one at a time with real, read-only adapters behind the
-exact same `(target_ref, ScopeResolution) -> list[dict]` signature, so
-nothing in this file or in orchestrator.py needs to change when that
-happens — only the import each entry points at.
+Every `adapter_fn` here started as a mock (adapters/mock/*.py, per step
+5); step 7 replaces these one at a time with real, read-only adapters
+behind the exact same `(target_ref, ScopeResolution) -> list[dict]`
+signature, so nothing in this file or in orchestrator.py needs to change
+when that happens — only the import each entry points at.
+`supply-chain` is the first one replaced (adapters/supply_chain.py: real
+OSV.dev + CISA KEV/FIRST.org EPSS/NVD data); the rest are still mocks.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from adapters import supply_chain
 from adapters.mock import (
     api_surface,
     code_firstparty,
@@ -25,7 +28,6 @@ from adapters.mock import (
     identity_access,
     infra_cloud,
     infra_network,
-    supply_chain,
 )
 from engine.orchestrator import AdapterFn, DomainSpec
 from engine.scope import ScopeModel
