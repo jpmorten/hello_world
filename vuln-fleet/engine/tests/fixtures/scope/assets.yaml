@@ -1,0 +1,21 @@
+entities:
+  - id: stibo-systems
+    name: Stibo Systems
+
+assets:
+  - asset_id: svc-checkout
+    entity: stibo-systems
+    type: service
+    owner_team: checkout-platform
+    criticality: high
+    targets:
+      - "repo:stibo/checkout"
+
+  - asset_id: mdm-core
+    entity: stibo-systems
+    type: service
+    owner_team: mdm-platform
+    criticality: critical
+    targets:
+      - "repo:stibo/mdm-core"
+      - "cidr:10.20.0.0/24"

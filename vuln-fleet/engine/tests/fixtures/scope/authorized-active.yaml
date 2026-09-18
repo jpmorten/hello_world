@@ -1,0 +1,12 @@
+authorizations:
+  - authorization_ref: "mdm-core-nsg-sweep-2026-09"
+    scope:
+      - "cidr:10.20.0.0/24"
+    actions:
+      - "port_scan"
+      - "service_fingerprint"
+    approved_by: "security-ops-lead@example-stibo.com"
+    signed_at: "2026-09-01T00:00:00Z"
+    valid_from: "2026-09-01T00:00:00Z"
+    valid_until: "2026-09-30T23:59:59Z"
+    signature: "PLACEHOLDER-UNSIGNED"

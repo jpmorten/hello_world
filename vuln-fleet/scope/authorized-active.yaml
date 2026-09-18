@@ -1,0 +1,27 @@
+# Signed active-scan authorizations.
+#
+# An active-scan adapter action (port scan, service fingerprint,
+# authenticated config pull, DAST — anything that sends traffic to a
+# target) is refused unless an entry here covers it: the target must match
+# one of `scope`, the requested action must be in `actions`, and the
+# current time must fall within [valid_from, valid_until].
+#
+# `signature` is a placeholder pending the real signing mechanism
+# (tracked for a later hardening step); today, the presence of this file
+# under change control plus the recorded `approved_by` identity is the
+# authorization record.
+#
+# EXAMPLE DATA — placeholder authorization, not a live approval.
+
+authorizations:
+  - authorization_ref: "mdm-core-nsg-sweep-2026-09"
+    scope:
+      - "cidr:10.20.0.0/24"
+    actions:
+      - "port_scan"
+      - "service_fingerprint"
+    approved_by: "security-ops-lead@example-stibo.com"
+    signed_at: "2026-09-01T00:00:00Z"
+    valid_from: "2026-09-01T00:00:00Z"
+    valid_until: "2026-09-30T23:59:59Z"
+    signature: "PLACEHOLDER-UNSIGNED"
