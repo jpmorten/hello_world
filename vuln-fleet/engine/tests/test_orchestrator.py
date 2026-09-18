@@ -43,13 +43,14 @@ def _scope_model() -> ScopeModel:
     )
 
 
-def _run(tmp_path, run_id="e2e-run") -> dict:
+def _run(tmp_path, run_id="e2e-run", previous_run_id=None) -> dict:
     orchestrator = Orchestrator(
         run_id,
         _scope_model(),
         log_dir=tmp_path / "logs",
         report_dir=tmp_path / "reports",
         domain_budgets={"supply-chain": 3, "api-surface": 3},
+        previous_run_id=previous_run_id,
     )
     return orchestrator.run(_domain_specs())
 
@@ -199,3 +200,79 @@ def test_duplicate_target_across_domains_is_not_treated_as_duplicate_spawn(tmp_p
 
     assert "repo:stibo/checkout" not in result["rollups"]["supply-chain"].targets_failed
     assert "repo:stibo/checkout" not in result["rollups"]["api-surface"].targets_failed
+
+
+# -- step 8: risk scoring, correlation, baseline delta -------------------------
+
+
+def test_findings_carry_a_risk_score(tmp_path):
+    result = _run(tmp_path)
+
+    for finding in result["findings"]:
+        assert 0.0 <= finding["risk_score"] <= 100.0
+        validate_finding(finding)  # risk_score is optional in the schema; must still validate
+
+
+def test_issues_json_written_and_covers_every_finding(tmp_path):
+    result = _run(tmp_path)
+
+    issues_path = Path(result["report_paths"]["issues_json"])
+    assert issues_path.exists()
+    issues = json.loads(issues_path.read_text())
+    all_finding_ids = {fid for issue in issues for fid in issue["finding_ids"]}
+    assert all_finding_ids == {f["finding_id"] for f in result["findings"]}
+
+
+def test_kev_finding_correlates_into_its_own_high_risk_issue(tmp_path):
+    result = _run(tmp_path)
+
+    kev_finding = next(f for f in result["findings"] if f["kev_listed"])
+    kev_issue = next(i for i in result["issues"] if kev_finding["finding_id"] in i["finding_ids"])
+
+    assert kev_issue["kev_listed"] is True
+    assert kev_issue["risk_score"] > 50.0
+
+
+def test_posture_md_reports_top_issues_and_delta(tmp_path):
+    result = _run(tmp_path)
+
+    posture_text = Path(result["report_paths"]["posture_md"]).read_text()
+
+    assert "## Top issues by risk" in posture_text
+    assert "## Baseline delta" in posture_text
+    assert f"{len(result['findings'])} new" in posture_text  # first run: everything is new
+
+
+def test_first_run_all_findings_are_new(tmp_path):
+    result = _run(tmp_path)
+
+    assert all(f["status"] == "new" for f in result["findings"])
+    assert result["delta"]["recurring"] == []
+    assert result["delta"]["regressed"] == []
+
+
+def test_second_run_same_findings_are_recurring(tmp_path):
+    first = _run(tmp_path, run_id="run-1")
+    second = _run(tmp_path, run_id="run-2", previous_run_id="run-1")
+
+    assert set(second["delta"]["recurring"]) == {f["finding_id"] for f in first["findings"]}
+    assert second["delta"]["new"] == []
+    assert all(f["status"] == "recurring" for f in second["findings"])
+
+
+def test_finding_disappearing_between_runs_is_resolved(tmp_path):
+    orchestrator1 = Orchestrator(
+        "run-1", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3},
+    )
+    orchestrator1.run(_domain_specs())
+
+    # run 2 only sweeps api-surface: everything supply-chain found is now "missing"
+    orchestrator2 = Orchestrator(
+        "run-2", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3}, previous_run_id="run-1",
+    )
+    api_only_specs = [s for s in _domain_specs() if s.domain == "api-surface"]
+    result2 = orchestrator2.run(api_only_specs)
+
+    assert len(result2["delta"]["resolved"]) > 0

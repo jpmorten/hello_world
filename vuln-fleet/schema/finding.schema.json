@@ -123,6 +123,12 @@
       "type": "string",
       "description": "Optional note on how confidence was derived, e.g. 'not_assessed' when an agent could not produce evidence-backed confidence."
     },
+    "risk_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "engine/risk.py's deterministic CVSS x EPSS x KEV x asset-criticality score. Optional: set by the orchestrator once dedup has run, not present on a worker's raw finding output."
+    },
     "false_positive_likelihood": { "type": "number", "minimum": 0, "maximum": 1 },
     "regulatory_tags": {
       "type": "array",

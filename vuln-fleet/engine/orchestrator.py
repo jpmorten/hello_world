@@ -21,8 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from engine.dedupe import compute_finding_id, dedupe_findings
+from engine import baseline
+from engine.dedupe import compute_finding_id, correlate_findings, dedupe_findings
 from engine.logbus import LogBus, Sink
+from engine.risk import score_finding
 from engine.scope import ScopeModel, ScopeResolution, ScopeViolation
 from engine.spawn import SpawnManager, SpawnRefused
 from schema.validate import validate_finding
@@ -55,11 +57,14 @@ class Orchestrator:
         report_dir: Path | str = "reports",
         sinks: Optional[list[Sink]] = None,
         domain_budgets: Optional[dict[str, int]] = None,
+        previous_run_id: Optional[str] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self.run_id = run_id
         self.scope_model = scope_model
-        self.report_dir = Path(report_dir) / run_id
+        self.reports_root = Path(report_dir)
+        self.report_dir = self.reports_root / run_id
+        self.previous_run_id = previous_run_id
         self._now = now_fn
         self.logbus = LogBus(run_id, log_dir=log_dir, sinks=sinks or [])
         self.spawn_manager = SpawnManager(
@@ -104,15 +109,20 @@ class Orchestrator:
 
         all_findings = [f for rollup in self.rollups.values() for f in rollup.findings]
         deduped = dedupe_findings(all_findings)
-        report_paths = self._write_report(deduped)
+        for finding in deduped:
+            finding["risk_score"] = score_finding(finding)
+
+        deduped, delta = baseline.compute_and_apply_delta(deduped, self.reports_root, self.previous_run_id)
+        issues = correlate_findings(deduped)
+        report_paths = self._write_report(deduped, delta, issues)
 
         self._emit_root_event(
             "run_complete",
             "info",
             f"Run {self.run_id} complete: {len(deduped)} finding(s) across {len(self.rollups)} domain(s).",
-            details={"finding_count": len(deduped), "domains": list(self.rollups.keys())},
+            details={"finding_count": len(deduped), "domains": list(self.rollups.keys()), "delta": delta},
         )
-        return {"findings": deduped, "rollups": self.rollups, "report_paths": report_paths}
+        return {"findings": deduped, "rollups": self.rollups, "issues": issues, "delta": delta, "report_paths": report_paths}
 
     def _run_domain(self, spec: DomainSpec) -> DomainRollup:
         domain_handle = self.spawn_manager.spawn(domain=spec.domain, agent_role=spec.domain)
@@ -213,14 +223,18 @@ class Orchestrator:
             **raw,
         }
 
-    def _write_report(self, findings: list[dict]) -> dict:
-        """Minimal proof of the log -> report leg. The full report suite
-        (by-domain.md, remediation-board.md, compliance-view.md, and the
-        richer posture.md with baseline delta) is step 9's job."""
+    def _write_report(self, findings: list[dict], delta: dict, issues: list[dict]) -> dict:
+        """Minimal proof of the log -> report leg, now carrying step 8's
+        risk scores, correlated issues, and baseline delta. The full
+        report suite (by-domain.md, remediation-board.md,
+        compliance-view.md) is still step 9's job."""
         self.report_dir.mkdir(parents=True, exist_ok=True)
 
         findings_path = self.report_dir / "findings.json"
         findings_path.write_text(json.dumps(findings, indent=2, sort_keys=True))
+
+        issues_path = self.report_dir / "issues.json"
+        issues_path.write_text(json.dumps(issues, indent=2, sort_keys=True))
 
         coverage_lines = []
         for domain, rollup in self.rollups.items():
@@ -231,10 +245,25 @@ class Orchestrator:
                 line += f" — coverage gaps: {gaps}"
             coverage_lines.append(line)
 
+        top_issues = sorted(issues, key=lambda issue: issue["risk_score"], reverse=True)[:10]
+        top_issue_lines = [
+            f"{i}. **{issue['issue_id']}** — risk {issue['risk_score']}, "
+            f"{issue['exposure_count']} exposure(s) across {', '.join(issue['domains'])}"
+            + (" (KEV-listed)" if issue["kev_listed"] else "")
+            for i, issue in enumerate(top_issues, start=1)
+        ]
+
+        delta_line = (
+            f"{len(delta['new'])} new, {len(delta['recurring'])} recurring, "
+            f"{len(delta['resolved'])} resolved, {len(delta['regressed'])} regressed"
+        )
+
         posture_path = self.report_dir / "posture.md"
         posture_path.write_text(
             f"# Posture Report — {self.run_id}\n\n"
-            f"Findings: {len(findings)}\n\n"
+            f"Findings: {len(findings)} ({len(issues)} correlated issue(s))\n\n"
+            "## Top issues by risk\n\n" + ("\n".join(top_issue_lines) or "None.") + "\n\n"
+            "## Baseline delta\n\n" + delta_line + "\n\n"
             "## Coverage\n\n" + "\n".join(coverage_lines) + "\n"
         )
-        return {"findings_json": str(findings_path), "posture_md": str(posture_path)}
+        return {"findings_json": str(findings_path), "issues_json": str(issues_path), "posture_md": str(posture_path)}

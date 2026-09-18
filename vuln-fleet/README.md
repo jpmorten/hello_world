@@ -139,8 +139,40 @@ Build is proceeding per the staged build order. Completed so far:
    to both HTTP seams so a single transient block or rate limit doesn't
    read as clean.
 
-Not built yet: real adapters for the other 8 domains, cross-domain
-correlation and risk scoring, baseline delta, the full report suite.
+8. **Dedupe, correlation, risk scoring, baseline delta** —
+   `engine/risk.py`: `score_finding()` is a deterministic 0–100 blend of
+   CVSS severity (50%), likelihood (30% — EPSS, or forced to 1.0 when
+   KEV-listed), and asset criticality (20%), with a KEV multiplier on top
+   so a confirmed-exploited finding always outranks an equally-scored
+   probable one. It's additive, not multiplicative, on purpose: a CVSS
+   9.8 with near-zero EPSS still carries roughly half its weight from
+   severity alone, instead of collapsing toward zero the way a pure
+   CVSS×EPSS product would. `score_issue()` aggregates a correlated
+   group's worst exposure with an exposure-breadth boost (capped
+   at +50%) — the same CVE live in five places is worse than live in one.
+   `engine/dedupe.py` gained `correlate_findings()`: findings sharing a
+   CVE become one issue with multiple exposures (domains/assets/
+   finding_ids), deliberately CVE-keyed only — a shared GHSA with no CVE
+   alias, or two findings whose titles merely look alike, are *not*
+   merged, since a wrong correlation hides a real second issue behind a
+   coincidental resemblance. `engine/baseline.py` (new) computes the
+   new/recurring/resolved/regressed delta the finding schema's `status`
+   field always had a slot for: it diffs the current run's finding_ids
+   against the previous run's `findings.json` plus a small persisted
+   ledger (`reports/.baseline_ledger.json`) of everything ever resolved,
+   so a finding reappearing after being fixed reads as `regressed`, not
+   a fresh `new`. `finding.schema.json` gained an optional `risk_score`
+   field. `Orchestrator.run()` now takes `previous_run_id`, stamps
+   `risk_score` and the real delta-derived `status` onto every finding,
+   and writes `reports/<run_id>/issues.json` alongside a `posture.md`
+   with a real "top issues by risk" ranking and baseline-delta summary —
+   verified manually against the full 9-domain sweep: the one KEV-listed
+   firmware finding correctly ranks #1 at the score cap (100.0). The full
+   report suite (by-domain/remediation-board/compliance-view) is still
+   step 9's.
+
+Not built yet: real adapters for the other 8 domains, the full report
+suite.
 
 ## Running the tests
 
