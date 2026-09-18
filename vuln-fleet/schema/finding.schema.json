@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vuln-fleet.stibo.internal/schema/finding.schema.json",
+  "title": "Finding",
+  "description": "OCSF Vulnerability Finding-aligned, ECS-compatible field names. Emitted by Tier 2 workers, rolled up unmodified in content (only status/dedupe fields change) through Tier 1 and Tier 0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "finding_id",
+    "run_id",
+    "domain",
+    "title",
+    "description",
+    "entity",
+    "asset",
+    "technology",
+    "location",
+    "identifiers",
+    "cvss_v4",
+    "epss",
+    "kev_listed",
+    "exploitation_status",
+    "first_seen",
+    "last_seen",
+    "evidence_ref",
+    "confidence",
+    "false_positive_likelihood",
+    "regulatory_tags",
+    "suggested_remediation",
+    "status",
+    "scope_ref",
+    "authorization_ref"
+  ],
+  "properties": {
+    "finding_id": {
+      "type": "string",
+      "description": "Deterministic fingerprint: sha256 of (domain, cve/cwe or title, asset_id, location.ref). Computed by engine/dedupe.py, never by agent judgement.",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "infra-network",
+        "infra-cloud",
+        "api-surface",
+        "firmware-hardware",
+        "code-firstparty",
+        "supply-chain",
+        "identity-access",
+        "endpoint-posture",
+        "data-exposure"
+      ]
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "description": { "type": "string", "minLength": 1 },
+    "entity": {
+      "type": "string",
+      "description": "Owning Stibo legal entity, must match an entity in scope/assets.yaml.",
+      "minLength": 1
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "type", "owner_team", "criticality"],
+      "properties": {
+        "asset_id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "owner_team": { "type": "string", "minLength": 1 },
+        "criticality": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"]
+        }
+      }
+    },
+    "technology": { "type": "string", "minLength": 1 },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["host", "repo", "endpoint", "firmware_image", "cloud_resource", "identity", "network_segment"]
+        },
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "identifiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cve": { "type": "array", "items": { "type": "string", "pattern": "^CVE-\\d{4}-\\d{4,}$" } },
+        "cwe": { "type": "array", "items": { "type": "string", "pattern": "^CWE-\\d+$" } },
+        "ghsa": { "type": "array", "items": { "type": "string", "pattern": "^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$" } }
+      }
+    },
+    "cvss_v4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base"],
+      "properties": {
+        "base": { "type": "number", "minimum": 0, "maximum": 10 },
+        "environmental": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+        "vector": { "type": "string" }
+      }
+    },
+    "epss": { "type": "number", "minimum": 0, "maximum": 1 },
+    "kev_listed": { "type": "boolean" },
+    "exploitation_status": {
+      "type": "string",
+      "enum": ["known_exploited", "poc_public", "no_known_exploitation"]
+    },
+    "first_seen": { "type": "string", "format": "date-time" },
+    "last_seen": { "type": "string", "format": "date-time" },
+    "evidence_ref": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Pointers to evidence (log lines, scanner report IDs, file+line refs). Never raw secrets/credentials; secret values are replaced by fingerprint+location before this array is populated."
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "confidence_basis": {
+      "type": "string",
+      "description": "Optional note on how confidence was derived, e.g. 'not_assessed' when an agent could not produce evidence-backed confidence."
+    },
+    "risk_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "engine/risk.py's deterministic CVSS x EPSS x KEV x asset-criticality score. Optional: set by the orchestrator once dedup has run, not present on a worker's raw finding output."
+    },
+    "false_positive_likelihood": { "type": "number", "minimum": 0, "maximum": 1 },
+    "regulatory_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["NIS2", "CRA", "EU_AI_Act", "GDPR", "ISO27001", "SOC2"]
+      }
+    },
+    "suggested_remediation": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["new", "recurring", "resolved", "regressed"]
+    },
+    "scope_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Pointer into scope/assets.yaml identifying the in-scope entry this finding's asset resolved against."
+    },
+    "authorization_ref": {
+      "type": ["string", "null"],
+      "description": "Required (non-null) if this finding was produced by an active-scan adapter; must reference a valid, in-window record in scope/authorized-active.yaml."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kev_listed": { "const": true } }
+      },
+      "then": {
+        "properties": {
+          "exploitation_status": { "const": "known_exploited" }
+        }
+      }
+    }
+  ]
+}

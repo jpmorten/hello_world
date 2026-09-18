@@ -1,0 +1,90 @@
+# Authoritative in-scope asset inventory.
+#
+# EXAMPLE DATA — placeholder entities/assets/targets for exercising the
+# scope engine and its tests. Replace with the real CMDB-derived
+# inventory before any run touches production. Nothing in this file is a
+# real Stibo host, repo, or network range.
+#
+# Every asset lists the target refs that resolve to it. A target ref not
+# listed under any asset here is out of scope, full stop.
+#
+# Target ref schemes: repo: | host: | ip: | endpoint: | cidr:
+# (cidr: only appears as a target *pattern*; queries use ip:, which is
+# checked for containment against any cidr: pattern.)
+
+entities:
+  - id: stibo-group
+    name: Stibo Software Group A/S
+  - id: stibo-systems
+    name: Stibo Systems
+  - id: stibo-dx
+    name: Stibo DX
+
+assets:
+  - asset_id: svc-checkout
+    entity: stibo-systems
+    type: service
+    owner_team: checkout-platform
+    criticality: high
+    targets:
+      - "repo:stibo/checkout"
+      - "host:checkout-prod-01.example-stibo.internal"
+
+  - asset_id: mdm-core
+    entity: stibo-systems
+    type: service
+    owner_team: mdm-platform
+    criticality: critical
+    targets:
+      - "repo:stibo/mdm-core"
+      - "cidr:10.20.0.0/24"
+
+  - asset_id: cms-edge
+    entity: stibo-dx
+    type: service
+    owner_team: dx-platform
+    criticality: high
+    targets:
+      - "repo:stibo/cms-edge"
+      - "host:cms-edge-01.example-stibodx.internal"
+      - "endpoint:https://cms-edge.example-stibodx.com"
+
+  - asset_id: corp-idp
+    entity: stibo-group
+    type: identity
+    owner_team: group-it-security
+    criticality: critical
+    targets:
+      - "endpoint:https://login.example-stibo.com"
+
+  - asset_id: fw-mgmt
+    entity: stibo-group
+    type: network_device
+    owner_team: network-security
+    criticality: high
+    targets:
+      - "endpoint:https://fw-mgmt.example-stibo.internal"
+
+  - asset_id: idrac-mdm-01
+    entity: stibo-systems
+    type: firmware
+    owner_team: mdm-platform
+    criticality: high
+    targets:
+      - "host:idrac-mdm-01.example-stibo.internal"
+
+  - asset_id: analytics-lake
+    entity: stibo-systems
+    type: data_store
+    owner_team: data-platform
+    criticality: critical
+    targets:
+      - "host:analytics-lake-01.example-stibo.internal"
+
+  - asset_id: public-assets-bucket
+    entity: stibo-dx
+    type: cloud_resource
+    owner_team: dx-platform
+    criticality: medium
+    targets:
+      - "endpoint:https://public-bucket.example-stibo-storage.com"

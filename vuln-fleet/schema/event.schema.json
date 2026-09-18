@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vuln-fleet.stibo.internal/schema/event.schema.json",
+  "title": "Event",
+  "description": "Common envelope for every lifecycle/log event written to logs/<run_id>.ndjson. Type-specific payload lives under 'details'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "timestamp",
+    "run_id",
+    "agent_id",
+    "agent_role",
+    "tier",
+    "parent_agent_id",
+    "span_id",
+    "parent_span_id",
+    "event_type",
+    "severity",
+    "entity",
+    "asset_id",
+    "scope_ref",
+    "authorization_ref",
+    "message",
+    "evidence_ref",
+    "integrity_hash"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339, UTC."
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "agent_id": { "type": "string", "minLength": 1 },
+    "agent_role": {
+      "type": "string",
+      "description": "e.g. fleet-orchestrator, supply-chain, or a worker's specific target label.",
+      "minLength": 1
+    },
+    "tier": { "type": "integer", "enum": [0, 1, 2] },
+    "parent_agent_id": {
+      "type": ["string", "null"],
+      "description": "Null only for the orchestrator (tier 0)."
+    },
+    "span_id": { "type": "string", "minLength": 1 },
+    "parent_span_id": { "type": ["string", "null"] },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "run_start",
+        "agent_spawn",
+        "agent_start",
+        "scope_check",
+        "scope_violation",
+        "adapter_call",
+        "finding",
+        "finding_dedupe",
+        "escalation",
+        "budget_exhausted",
+        "heartbeat",
+        "agent_complete",
+        "agent_error",
+        "kill_switch",
+        "rollup",
+        "sink_delivery_failed",
+        "run_complete"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["debug", "info", "notice", "warning", "error", "critical"]
+    },
+    "entity": { "type": ["string", "null"] },
+    "asset_id": { "type": ["string", "null"] },
+    "scope_ref": { "type": ["string", "null"] },
+    "authorization_ref": { "type": ["string", "null"] },
+    "message": { "type": "string" },
+    "evidence_ref": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "details": {
+      "type": "object",
+      "description": "Event-type-specific payload. For event_type=finding, this is a Finding object per finding.schema.json."
+    },
+    "integrity_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "sha256(previous_integrity_hash + canonical_json(event_without_this_field)). First event of a run chains from a fixed genesis constant."
+    }
+  }
+}
