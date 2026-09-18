@@ -211,3 +211,84 @@ def test_fetch_kev_catalog_recovers_from_one_transient_failure(monkeypatch):
     monkeypatch.setattr(cve_intel.urllib.request, "urlopen", fake_urlopen)
 
     assert cve_intel.fetch_kev_catalog() == {"CVE-2021-44228", "CVE-2022-88888"}
+
+
+# -- search_nvd_by_keyword -----------------------------------------------------
+
+KEYWORD_SEARCH_FIXTURE = {
+    "totalResults": 2,
+    "vulnerabilities": [
+        {
+            "cve": {
+                "id": "CVE-2013-4783",
+                "descriptions": [{"lang": "en", "value": "The Dell iDRAC6 with firmware ... allows remote attackers to bypass authentication."}],
+                "weaknesses": [{"description": [{"lang": "en", "value": "CWE-287"}]}],
+                "metrics": {"cvssMetricV2": [{"cvssData": {"baseScore": 10.0}}]},
+            }
+        },
+        {
+            "cve": {
+                "id": "CVE-2016-5685",
+                "descriptions": [{"lang": "en", "value": "Dell iDRAC7 and iDRAC8 devices allow authenticated users to gain access."}],
+                "weaknesses": [],
+                "metrics": {},
+            }
+        },
+    ],
+}
+
+
+def test_search_nvd_by_keyword_returns_raw_entries(monkeypatch):
+    captured = {}
+
+    def fake_get(url, timeout=15.0):
+        captured["url"] = url
+        return KEYWORD_SEARCH_FIXTURE
+
+    monkeypatch.setattr(cve_intel, "_http_get_json", fake_get)
+
+    results = cve_intel.search_nvd_by_keyword("iDRAC", results_limit=5)
+
+    assert len(results) == 2
+    assert results[0]["cve"]["id"] == "CVE-2013-4783"
+    assert "keywordSearch=iDRAC" in captured["url"]
+    assert "resultsPerPage=5" in captured["url"]
+
+
+def test_search_nvd_by_keyword_unreachable_returns_empty_list(monkeypatch):
+    def boom(url, timeout=15.0):
+        raise TimeoutError("nvd unreachable")
+
+    monkeypatch.setattr(cve_intel, "_http_get_json", boom)
+
+    assert cve_intel.search_nvd_by_keyword("iDRAC") == []
+
+
+def test_search_nvd_by_keyword_url_encodes_the_keyword(monkeypatch):
+    captured = {}
+
+    def fake_get(url, timeout=15.0):
+        captured["url"] = url
+        return {"vulnerabilities": []}
+
+    monkeypatch.setattr(cve_intel, "_http_get_json", fake_get)
+
+    cve_intel.search_nvd_by_keyword("Dell iDRAC")
+
+    assert "Dell+iDRAC" in captured["url"] or "Dell%20iDRAC" in captured["url"]
+
+
+# -- cvss_base_from_metrics ----------------------------------------------------
+
+
+def test_cvss_base_from_metrics_prefers_higher_version():
+    metrics = {
+        "cvssMetricV2": [{"cvssData": {"baseScore": 9.3}}],
+        "cvssMetricV31": [{"cvssData": {"baseScore": 10.0}}],
+    }
+
+    assert cve_intel.cvss_base_from_metrics(metrics) == 10.0
+
+
+def test_cvss_base_from_metrics_empty_returns_none():
+    assert cve_intel.cvss_base_from_metrics({}) is None

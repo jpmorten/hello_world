@@ -18,12 +18,14 @@ from __future__ import annotations
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
 KEV_CATALOG_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL_TEMPLATE = "https://api.first.org/data/v1/epss?cve={cve_id}"
 NVD_URL_TEMPLATE = "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+NVD_KEYWORD_URL_TEMPLATE = "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={keyword}&resultsPerPage={limit}"
 
 _kev_cache: Optional[set[str]] = None
 
@@ -88,23 +90,47 @@ def fetch_epss(cve_id: str) -> Optional[float]:
         return None
 
 
+def cvss_base_from_metrics(metrics: dict) -> Optional[float]:
+    """Shared by fetch_nvd_cvss_base and any caller (e.g. a keyword
+    search result) that already has an NVD `cve.metrics` object and
+    wants its base score without a second network round-trip. Prefers
+    the highest CVSS version NVD has published (v4 > v3.1 > v3.0 > v2),
+    since NVD's own CVSS v4 coverage is still sparse."""
+    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+        entries = metrics.get(key)
+        if entries:
+            return float(entries[0]["cvssData"]["baseScore"])
+    return None
+
+
 def fetch_nvd_cvss_base(cve_id: str) -> Optional[float]:
-    """Best-effort CVSS base score from NVD, preferring the highest CVSS
-    version NVD has published for this CVE (v4 > v3.1 > v3.0 > v2), since
-    NVD's own CVSS v4 coverage is still sparse."""
+    """Best-effort CVSS base score from NVD for one known CVE id."""
     try:
         data = _http_get_json(NVD_URL_TEMPLATE.format(cve_id=cve_id))
         vulns = data.get("vulnerabilities") or []
         if not vulns:
             return None
-        metrics = vulns[0]["cve"].get("metrics", {})
-        for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-            entries = metrics.get(key)
-            if entries:
-                return float(entries[0]["cvssData"]["baseScore"])
-        return None
+        return cvss_base_from_metrics(vulns[0]["cve"].get("metrics", {}))
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError, IndexError):
         return None
+
+
+def search_nvd_by_keyword(keyword: str, results_limit: int = 5) -> list[dict]:
+    """Real NVD keyword search (e.g. a vendor/product name), returning raw
+    CVE entries in NVD's own shape (`{"cve": {...}}`). Unlike enrich_cve,
+    there's no specific CVE id here to key off — this is how a caller with
+    a product name but no SBOM-precision version inventory (a firmware
+    device, not a versioned package) finds *candidate* CVEs. Matches are
+    unversioned: the caller is responsible for saying so in whatever it
+    builds from these, not presenting a keyword match as a confirmed,
+    version-verified vulnerability. Returns [] on any failure, never
+    raises — a search that comes back empty is a coverage gap for the
+    caller to report, not a crash."""
+    try:
+        url = NVD_KEYWORD_URL_TEMPLATE.format(keyword=urllib.parse.quote(keyword), limit=results_limit)
+        return _http_get_json(url).get("vulnerabilities", [])
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+        return []
 
 
 def enrich_cve(cve_id: str) -> dict:

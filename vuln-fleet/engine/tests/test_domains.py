@@ -3,12 +3,12 @@ the spawn -> worker -> rollup -> log -> report loop from step 5 scales to
 every Tier 1 domain in the design brief, not just the two that need no
 active scanning.
 
-supply-chain's registry entry is the real adapter (adapters/supply_chain.py,
-step 7): it calls out to OSV.dev/CISA KEV/FIRST.org EPSS/NVD over the
-network by default. The autouse fixture below patches those two HTTP
-seams with frozen fixture data so this file's tests stay hermetic and
-fast, the same as every other adapter in the registry (which are still
-mocks with no I/O at all).
+supply-chain and firmware-hardware are real adapters (adapters/
+supply_chain.py, adapters/firmware_hardware.py): both call out to
+OSV.dev/CISA KEV/FIRST.org EPSS/NVD over the network by default. The
+autouse fixture below patches those HTTP seams with frozen fixture data
+so this file's tests stay hermetic and fast, the same as every other
+adapter in the registry (still mocks, no I/O at all).
 """
 import json
 from pathlib import Path
@@ -34,6 +34,18 @@ _LODASH_VULN_FIXTURE = {
         }
     ]
 }
+_IDRAC_KEYWORD_FIXTURE = {
+    "vulnerabilities": [
+        {
+            "cve": {
+                "id": "CVE-2013-4783",
+                "descriptions": [{"lang": "en", "value": "The Dell iDRAC6 allows remote attackers to bypass authentication via cipher zero."}],
+                "weaknesses": [{"description": [{"lang": "en", "value": "CWE-287"}]}],
+                "metrics": {"cvssMetricV2": [{"cvssData": {"baseScore": 10.0}}]},
+            }
+        }
+    ]
+}
 _KEV_NOT_LISTED = {"vulnerabilities": []}
 _EPSS_SOME_SCORE = {"data": [{"cve": "CVE-2020-28500", "epss": "0.04"}]}
 _NVD_NO_RESULT = {"vulnerabilities": []}
@@ -42,13 +54,17 @@ _NVD_NO_RESULT = {"vulnerabilities": []}
 @pytest.fixture(autouse=True)
 def _hermetic_supply_chain_network(monkeypatch):
     monkeypatch.setattr(osv, "_http_post_json", lambda url, payload, timeout=15.0: _LODASH_VULN_FIXTURE)
-    monkeypatch.setattr(
-        cve_intel,
-        "_http_get_json",
-        lambda url, timeout=15.0: (
-            _KEV_NOT_LISTED if "cisa.gov" in url else _EPSS_SOME_SCORE if "first.org" in url else _NVD_NO_RESULT
-        ),
-    )
+
+    def fake_nvd_get(url, timeout=15.0):
+        if "cisa.gov" in url:
+            return _KEV_NOT_LISTED
+        if "first.org" in url:
+            return _EPSS_SOME_SCORE
+        if "keywordSearch=" in url:
+            return _IDRAC_KEYWORD_FIXTURE
+        return _NVD_NO_RESULT
+
+    monkeypatch.setattr(cve_intel, "_http_get_json", fake_nvd_get)
     cve_intel.reset_cache()
     yield
     cve_intel.reset_cache()
@@ -162,10 +178,10 @@ def test_full_sweep_across_all_nine_domains(tmp_path):
     result = orchestrator.run(specs)
 
     assert set(result["rollups"]) == set(DOMAIN_REGISTRY)
-    # 9 mock findings (api-surface:1, infra-network:2, infra-cloud:1,
-    # firmware-hardware:1, code-firstparty:1, identity-access:1,
-    # endpoint-posture:1, data-exposure:1) + 1 real supply-chain finding
-    # from the patched OSV/KEV/EPSS/NVD fixtures.
+    # 8 mock findings (api-surface:1, infra-network:2, infra-cloud:1,
+    # code-firstparty:1, identity-access:1, endpoint-posture:1,
+    # data-exposure:1) + 1 real supply-chain finding + 1 real
+    # firmware-hardware finding, both from the patched fixtures.
     assert len(result["findings"]) == 10
 
     for finding in result["findings"]:

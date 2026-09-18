@@ -10,21 +10,26 @@ Every `adapter_fn` here started as a mock (adapters/mock/*.py, per step
 behind the exact same `(target_ref, ScopeResolution) -> list[dict]`
 signature, so nothing in this file or in orchestrator.py needs to change
 when that happens — only the import each entry points at.
-`supply-chain` is the first one replaced (adapters/supply_chain.py: real
-OSV.dev + CISA KEV/FIRST.org EPSS/NVD data); the rest are still mocks.
+`supply-chain` (adapters/supply_chain.py: real OSV.dev + CISA KEV/
+FIRST.org EPSS/NVD data) and `firmware-hardware` (adapters/
+firmware_hardware.py: real NVD keyword search + the same KEV/EPSS/NVD
+enrichment, honestly weaker signal since it has no version to match
+against) are real; the rest are still mocks — see README.md for why the
+other 7 domains can't follow the same pattern (they need credentialed
+access to internal systems that don't exist for this example company,
+not another public feed).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from adapters import supply_chain
+from adapters import firmware_hardware, supply_chain
 from adapters.mock import (
     api_surface,
     code_firstparty,
     data_exposure,
     endpoint_posture,
-    firmware_hardware,
     identity_access,
     infra_cloud,
     infra_network,

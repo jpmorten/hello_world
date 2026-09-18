@@ -245,7 +245,41 @@ Build is proceeding per the staged build order. Completed so far:
     for real against a live sweep while writing it, including the
     hash-chain verification snippet.
 
-Not built yet: real adapters for the other 8 domains.
+11. **Second real adapter: `firmware-hardware`** —
+    `adapters/firmware_hardware.py` uses `adapters/cve_intel.py`'s new
+    `search_nvd_by_keyword()` (real NVD keyword search) instead of the
+    exact-version OSV.dev match `supply-chain` gets, because a firmware
+    image has no package-manager-precision version to check against —
+    only a vendor/product name. This is an honestly weaker signal than
+    `supply-chain`'s, and the code says so: every finding's description
+    states it's an unversioned keyword match, `confidence` is 0.35 (vs.
+    supply-chain's 0.9) and `false_positive_likelihood` is 0.45, and the
+    remediation string asks the reader to confirm the installed version
+    before treating it as live — rather than presenting an NVD keyword
+    hit as a confirmed vulnerability the way an exact OSV.dev version
+    match can be. Verified live: a real scan of `idrac-mdm-01` returns 5
+    real Dell iDRAC CVEs from NVD, none of which happen to be KEV-listed
+    (the mock adapter's fabricated "CVE-2022-88888, KEV-listed" finding
+    is gone — replaced by what NVD actually reports, not a fabricated
+    drama beat).
+
+    The other 7 domains (`infra-network`, `infra-cloud`, `api-surface`,
+    `identity-access`, `endpoint-posture`, `data-exposure`,
+    `code-firstparty`) can't follow either of these two patterns: their
+    finding types are inherently org-internal telemetry (firewall rules,
+    IAM policy, IdP audit logs, EDR consoles, encryption-at-rest status,
+    private source code) with no public read-only feed standing in for
+    them the way CISA/EPSS/NVD/OSV.dev do for CVE data. Making them real
+    needs real credentialed access to real Stibo CMDB/Defender/Wiz/
+    Entra-equivalent systems — which, since Stibo Software Group is an
+    example company built for this exercise, don't exist to connect to.
+    Fabricating "real-looking" data for them would violate the one rule
+    this whole project has held to since step 1: never report a number
+    you can't evidence.
+
+Not built yet: real adapters for the remaining 7 domains — blocked on
+real credentialed infrastructure access this exercise doesn't have, not
+on more engineering effort.
 
 ## Running the tests
 
