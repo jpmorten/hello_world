@@ -57,6 +57,7 @@ class Orchestrator:
         sinks: Optional[list[Sink]] = None,
         domain_budgets: Optional[dict[str, int]] = None,
         previous_run_id: Optional[str] = None,
+        kill_flag_path: Optional[Path | str] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self.run_id = run_id
@@ -64,6 +65,12 @@ class Orchestrator:
         self.reports_root = Path(report_dir)
         self.report_dir = self.reports_root / run_id
         self.previous_run_id = previous_run_id
+        # Checked between targets/domains, not just at startup: a run can
+        # take real wall-clock time (live adapters hit real networks), and
+        # this file is how a separate `engine.cli kill` invocation reaches
+        # an already-running orchestrator.run() call -- there's no other
+        # IPC between them.
+        self.kill_flag_path = Path(kill_flag_path) if kill_flag_path else self.reports_root / f"{run_id}.kill"
         self._now = now_fn
         self.logbus = LogBus(run_id, log_dir=log_dir, sinks=sinks or [])
         self.spawn_manager = SpawnManager(
@@ -98,12 +105,31 @@ class Orchestrator:
             event["details"] = details
         self.logbus.emit(event)
 
+    def _kill_requested(self) -> bool:
+        return self.kill_flag_path.exists()
+
+    def _gap_rollup(self, spec: DomainSpec, reason: str) -> DomainRollup:
+        return DomainRollup(
+            domain=spec.domain,
+            findings=[],
+            targets_attempted=list(spec.targets),
+            targets_failed={t: reason for t in spec.targets},
+        )
+
     def run(self, domain_specs: list[DomainSpec]) -> dict:
         self._emit_root_event(
             "run_start", "info", f"Run {self.run_id} starting.", details={"domains": [d.domain for d in domain_specs]}
         )
 
         for spec in domain_specs:
+            if self.spawn_manager.kill_switch_active:
+                # a prior domain in this same run already tripped the kill
+                # switch; every domain after it is a full gap, and never
+                # even gets a domain_spawn event -- it was never reached.
+                self.rollups[spec.domain] = self._gap_rollup(
+                    spec, "kill_switch: run terminated before this domain started"
+                )
+                continue
             self.rollups[spec.domain] = self._run_domain(spec)
 
         all_findings = [f for rollup in self.rollups.values() for f in rollup.findings]
@@ -131,6 +157,12 @@ class Orchestrator:
         targets_failed: dict[str, str] = {}
 
         for target_ref in spec.targets:
+            if self._kill_requested():
+                if not self.spawn_manager.kill_switch_active:
+                    self.spawn_manager.trigger_kill_switch(f"kill flag present: {self.kill_flag_path}")
+                targets_failed[target_ref] = "kill_switch: run terminated before this target was assessed"
+                continue
+
             try:
                 worker_handle = self.spawn_manager.spawn(
                     domain=spec.domain,
@@ -159,6 +191,18 @@ class Orchestrator:
                     worker_handle.agent_id, event_type="agent_error", message=f"Refused: {violation.reason}"
                 )
                 continue
+
+            # Logged on the success path too, not just violations: the SOC
+            # audit trail should show every scope decision this run made,
+            # not only the refusals — matching .claude/hooks/scope_guard.py,
+            # which logs scope_check the same way for the live-agent path.
+            self.spawn_manager.emit_event_for(
+                worker_handle,
+                "scope_check",
+                "info",
+                f"Target {target_ref!r} resolved in scope.",
+                details={"target_ref": target_ref, "asset_id": resolution.asset_id},
+            )
 
             self.spawn_manager.heartbeat(worker_handle.agent_id)
 

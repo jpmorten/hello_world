@@ -142,6 +142,26 @@ def test_lifecycle_events_present_for_domain_and_worker_agents(tmp_path):
     assert len(domain_agent_ids) == 2  # one rollup per domain
 
 
+def test_scope_check_logged_for_every_successfully_resolved_target(tmp_path):
+    """The audit trail should show every scope decision, not just
+    refusals — matching .claude/hooks/scope_guard.py's behavior on the
+    live-agent path."""
+    result = _run(tmp_path)
+
+    events = _log_events(tmp_path)
+    scope_checks = [e for e in events if e["event_type"] == "scope_check"]
+    resolved_targets = {e["details"]["target_ref"] for e in scope_checks}
+
+    in_scope_targets = {
+        target
+        for rollup in result["rollups"].values()
+        for target in rollup.targets_attempted
+        if target not in rollup.targets_failed
+    }
+    assert resolved_targets == in_scope_targets
+    assert len(scope_checks) == len(in_scope_targets)  # exactly one per resolved target, not per finding
+
+
 def test_report_files_written(tmp_path):
     result = _run(tmp_path)
 
@@ -279,3 +299,65 @@ def test_finding_disappearing_between_runs_is_resolved(tmp_path):
     result2 = orchestrator2.run(api_only_specs)
 
     assert len(result2["delta"]["resolved"]) > 0
+
+
+# -- kill switch --------------------------------------------------------------
+
+
+def test_kill_flag_present_before_run_gaps_every_domain(tmp_path):
+    kill_flag = tmp_path / "reports" / "e2e-run.kill"
+    kill_flag.parent.mkdir(parents=True)
+    kill_flag.write_text("kill requested")
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3},
+    )
+    result = orchestrator.run(_domain_specs())
+
+    assert result["findings"] == []
+    for rollup in result["rollups"].values():
+        assert all("kill_switch" in reason for reason in rollup.targets_failed.values())
+    assert orchestrator.spawn_manager.kill_switch_active is True
+
+
+def test_kill_flag_written_mid_run_stops_remaining_targets_and_domains(tmp_path):
+    kill_flag = tmp_path / "reports" / "e2e-run.kill"
+    calls = {"n": 0}
+
+    def killing_adapter(target_ref, resolution):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            kill_flag.parent.mkdir(parents=True, exist_ok=True)
+            kill_flag.write_text("kill requested mid-run")
+        return supply_chain.scan(target_ref, resolution)
+
+    specs = [
+        DomainSpec(
+            domain="supply-chain",
+            worker_role="repo-worker",
+            targets=["repo:stibo/checkout", "repo:stibo/mdm-core"],
+            adapter_fn=killing_adapter,
+        ),
+        DomainSpec(domain="api-surface", worker_role="endpoint-worker", targets=["endpoint:https://login.example-stibo.com"], adapter_fn=api_surface.scan),
+    ]
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3},
+    )
+
+    result = orchestrator.run(specs)
+
+    # first target was already in flight when the flag appeared: it completed normally
+    supply_chain_rollup = result["rollups"]["supply-chain"]
+    assert len(supply_chain_rollup.findings) > 0
+    assert "repo:stibo/checkout" not in supply_chain_rollup.targets_failed
+    # second target in the same domain: killed
+    assert "kill_switch" in supply_chain_rollup.targets_failed["repo:stibo/mdm-core"]
+    # the next domain never even started
+    api_rollup = result["rollups"]["api-surface"]
+    assert "kill_switch" in api_rollup.targets_failed["endpoint:https://login.example-stibo.com"]
+    assert api_rollup.findings == []
+
+    posture_text = Path(result["report_paths"]["posture_md"]).read_text()
+    assert "kill_switch" in posture_text

@@ -204,6 +204,47 @@ Build is proceeding per the staged build order. Completed so far:
    15-day SLA), and every regulatory section reflects real tagged
    findings from the run, not placeholders.
 
+10. **Kill switch, CLI, slash commands, RUNBOOK, THREAT-MODEL** —
+    `Orchestrator` now checks a per-run kill flag
+    (`reports/<run_id>.kill`) between every target and before every
+    domain (`_kill_requested`/`_gap_rollup` in `engine/orchestrator.py`):
+    a domain already in flight when killed keeps whatever it completed
+    and gaps the rest with reason `kill_switch: ...`; a domain never
+    reached gets a full-gap rollup without even a `domain_spawn`
+    event, so the log distinguishes "in flight when killed" from "never
+    reached." `engine/cli.py` (new) is the real, tested command-line
+    entry point behind this and every other operator action —
+    `python3 -m engine.cli full-sweep|delta-sweep|target|kill` — and
+    `.claude/commands/{full-sweep,delta-sweep,target,kill}.md` are the
+    matching slash commands for a live Claude Code session, each one
+    instructing Claude to run the CLI and report back rather than
+    reimplementing any of this in a subagent's own reasoning.
+
+    The CLI surfaced one real bug during its own testing: `LOG_DIR`/
+    `REPORT_DIR` module globals were bound as function-default-argument
+    values (`def f(x=LOG_DIR)`), which Python evaluates once at import
+    time — so tests that monkeypatched `cli.LOG_DIR` and then called a
+    function *without* an explicit argument silently kept operating on
+    the original path. Every unit test that passed an explicit argument
+    masked this; only the end-to-end `kill` command (which relies on
+    the default) exposed it. Fixed by resolving the module global inside
+    the function body instead of binding it as a default.
+
+    `THREAT-MODEL.md` and `RUNBOOK.md` (new, both at the repo root) cover
+    the rest: threat model covers purpose/non-goals, actors and trust
+    boundaries, the threats actually mitigated by what's built (scope
+    violation, runaway spawning, inability to stop a run, bad third-party
+    intelligence data, secret exposure) versus what's a documented gap
+    (no active `prompt_injection_suspected` detection yet, no redaction
+    runtime), human-oversight/EU-AI-Act posture, and known accuracy
+    limitations (CVE-only correlation, no Annex A control mapping, 8 of
+    9 domains still on mock adapters). The runbook covers starting a
+    run, approving an active-scan authorization, reading and verifying
+    the hash-chained log, responding to a scope violation, killing a
+    run, and handing findings to the SOC — every command in it was run
+    for real against a live sweep while writing it, including the
+    hash-chain verification snippet.
+
 Not built yet: real adapters for the other 8 domains.
 
 ## Running the tests
