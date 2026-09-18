@@ -154,7 +154,7 @@ def test_report_files_written(tmp_path):
     assert len(on_disk_findings) == len(result["findings"])
 
     posture_text = posture_path.read_text()
-    assert "coverage gaps" in posture_text
+    assert "Coverage gap" in posture_text
     assert "repo:unknown/ghost" in posture_text
     assert "endpoint:foo.salesforce.com" in posture_text
 
@@ -238,9 +238,12 @@ def test_posture_md_reports_top_issues_and_delta(tmp_path):
 
     posture_text = Path(result["report_paths"]["posture_md"]).read_text()
 
-    assert "## Top issues by risk" in posture_text
-    assert "## Baseline delta" in posture_text
-    assert f"{len(result['findings'])} new" in posture_text  # first run: everything is new
+    assert "## Top 10 issues by business risk" in posture_text
+    assert "## Delta vs. previous run" in posture_text
+    # first run: no previous run to diff against, so posture.md says so
+    # explicitly rather than presenting delta counts against nothing.
+    assert "No previous run to compare against" in posture_text
+    assert all(f["status"] == "new" for f in result["findings"])
 
 
 def test_first_run_all_findings_are_new(tmp_path):

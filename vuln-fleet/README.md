@@ -171,8 +171,40 @@ Build is proceeding per the staged build order. Completed so far:
    report suite (by-domain/remediation-board/compliance-view) is still
    step 9's.
 
-Not built yet: real adapters for the other 8 domains, the full report
-suite.
+9. **Full report suite** — `engine/reports.py` (new; report generation
+   moved out of `engine/orchestrator.py` so it's unit-testable against
+   synthetic data without running a full sweep) writes all five files
+   `reports/<run_id>/` was always meant to have:
+   - `posture.md`: an executive summary with an overall risk-posture
+     label (CLEAN/Low/Medium/High/Critical, from the highest issue's
+     risk score), the top 10 issues by business risk, coverage achieved
+     vs. scope with every gap named by target and reason, and a real
+     delta vs. the previous run — or, on a first run, an explicit "no
+     previous run to compare against" rather than presenting delta
+     counts against nothing.
+   - `by-domain.md`: one section per Tier 1 domain with its own coverage
+     gaps and findings, ranked by risk.
+   - `remediation-board.md`: every correlated issue ranked by risk, with
+     owner team(s) (from the resolved asset, not guessed), a
+     declared-policy SLA clock by severity band (Critical 15d / High
+     30d / Medium 90d / Low 180d), and a coarse per-domain effort
+     estimate (dependency bump vs. network change vs. firmware/vendor
+     coordination) — a defensible default, not a per-finding guess.
+   - `compliance-view.md`: findings grouped by their real
+     `regulatory_tags` under NIS2/CRA/ISO27001/GDPR headings, each shown
+     even when empty ("No findings currently tagged X") rather than
+     silently omitted, plus any other tags present. Explicitly does
+     *not* claim ISO 27001 Annex A control-number mapping — that needs a
+     control taxonomy this fleet doesn't have, and a plausible-looking
+     control ID would be exactly the unevidenced number the design
+     brief says never to report.
+
+   Verified against the full 9-domain sweep: the remediation board
+   correctly seats the KEV-listed firmware issue at rank 1 (Critical,
+   15-day SLA), and every regulatory section reflects real tagged
+   findings from the run, not placeholders.
+
+Not built yet: real adapters for the other 8 domains.
 
 ## Running the tests
 

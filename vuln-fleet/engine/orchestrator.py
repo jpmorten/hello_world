@@ -15,13 +15,12 @@ extensible" requirement for Tier 1 agents.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from engine import baseline
+from engine import baseline, reports
 from engine.dedupe import compute_finding_id, correlate_findings, dedupe_findings
 from engine.logbus import LogBus, Sink
 from engine.risk import score_finding
@@ -114,7 +113,9 @@ class Orchestrator:
 
         deduped, delta = baseline.compute_and_apply_delta(deduped, self.reports_root, self.previous_run_id)
         issues = correlate_findings(deduped)
-        report_paths = self._write_report(deduped, delta, issues)
+        report_paths = reports.write_reports(
+            self.report_dir, self.run_id, deduped, issues, self.rollups, delta, self.previous_run_id
+        )
 
         self._emit_root_event(
             "run_complete",
@@ -223,47 +224,3 @@ class Orchestrator:
             **raw,
         }
 
-    def _write_report(self, findings: list[dict], delta: dict, issues: list[dict]) -> dict:
-        """Minimal proof of the log -> report leg, now carrying step 8's
-        risk scores, correlated issues, and baseline delta. The full
-        report suite (by-domain.md, remediation-board.md,
-        compliance-view.md) is still step 9's job."""
-        self.report_dir.mkdir(parents=True, exist_ok=True)
-
-        findings_path = self.report_dir / "findings.json"
-        findings_path.write_text(json.dumps(findings, indent=2, sort_keys=True))
-
-        issues_path = self.report_dir / "issues.json"
-        issues_path.write_text(json.dumps(issues, indent=2, sort_keys=True))
-
-        coverage_lines = []
-        for domain, rollup in self.rollups.items():
-            assessed = len(rollup.targets_attempted) - len(rollup.targets_failed)
-            line = f"- **{domain}**: {assessed}/{len(rollup.targets_attempted)} target(s) assessed"
-            if rollup.targets_failed:
-                gaps = "; ".join(f"{t} ({r})" for t, r in rollup.targets_failed.items())
-                line += f" — coverage gaps: {gaps}"
-            coverage_lines.append(line)
-
-        top_issues = sorted(issues, key=lambda issue: issue["risk_score"], reverse=True)[:10]
-        top_issue_lines = [
-            f"{i}. **{issue['issue_id']}** — risk {issue['risk_score']}, "
-            f"{issue['exposure_count']} exposure(s) across {', '.join(issue['domains'])}"
-            + (" (KEV-listed)" if issue["kev_listed"] else "")
-            for i, issue in enumerate(top_issues, start=1)
-        ]
-
-        delta_line = (
-            f"{len(delta['new'])} new, {len(delta['recurring'])} recurring, "
-            f"{len(delta['resolved'])} resolved, {len(delta['regressed'])} regressed"
-        )
-
-        posture_path = self.report_dir / "posture.md"
-        posture_path.write_text(
-            f"# Posture Report — {self.run_id}\n\n"
-            f"Findings: {len(findings)} ({len(issues)} correlated issue(s))\n\n"
-            "## Top issues by risk\n\n" + ("\n".join(top_issue_lines) or "None.") + "\n\n"
-            "## Baseline delta\n\n" + delta_line + "\n\n"
-            "## Coverage\n\n" + "\n".join(coverage_lines) + "\n"
-        )
-        return {"findings_json": str(findings_path), "issues_json": str(issues_path), "posture_md": str(posture_path)}
