@@ -47,6 +47,7 @@ assets:
     targets:
       - "repo:stibo/cms-edge"
       - "host:cms-edge-01.example-stibodx.internal"
+      - "endpoint:https://cms-edge.example-stibodx.com"
 
   - asset_id: corp-idp
     entity: stibo-group
@@ -55,3 +56,35 @@ assets:
     criticality: critical
     targets:
       - "endpoint:https://login.example-stibo.com"
+
+  - asset_id: fw-mgmt
+    entity: stibo-group
+    type: network_device
+    owner_team: network-security
+    criticality: high
+    targets:
+      - "endpoint:https://fw-mgmt.example-stibo.internal"
+
+  - asset_id: idrac-mdm-01
+    entity: stibo-systems
+    type: firmware
+    owner_team: mdm-platform
+    criticality: high
+    targets:
+      - "host:idrac-mdm-01.example-stibo.internal"
+
+  - asset_id: analytics-lake
+    entity: stibo-systems
+    type: data_store
+    owner_team: data-platform
+    criticality: critical
+    targets:
+      - "host:analytics-lake-01.example-stibo.internal"
+
+  - asset_id: public-assets-bucket
+    entity: stibo-dx
+    type: cloud_resource
+    owner_team: dx-platform
+    criticality: medium
+    targets:
+      - "endpoint:https://public-bucket.example-stibo-storage.com"

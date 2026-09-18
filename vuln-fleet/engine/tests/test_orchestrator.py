@@ -23,14 +23,12 @@ def _domain_specs() -> list[DomainSpec]:
         DomainSpec(
             domain="supply-chain",
             worker_role="repo-worker",
-            asset_type="repository",
             targets=["repo:stibo/checkout", "repo:stibo/mdm-core", "repo:unknown/ghost"],
             adapter_fn=supply_chain.scan,
         ),
         DomainSpec(
             domain="api-surface",
             worker_role="endpoint-worker",
-            asset_type="api_endpoint",
             targets=["endpoint:https://login.example-stibo.com", "endpoint:foo.salesforce.com"],
             adapter_fn=api_surface.scan,
         ),
@@ -186,14 +184,12 @@ def test_duplicate_target_across_domains_is_not_treated_as_duplicate_spawn(tmp_p
         DomainSpec(
             domain="supply-chain",
             worker_role="repo-worker",
-            asset_type="repository",
             targets=["repo:stibo/checkout"],
             adapter_fn=supply_chain.scan,
         ),
         DomainSpec(
             domain="api-surface",
             worker_role="endpoint-worker",
-            asset_type="api_endpoint",
             targets=["repo:stibo/checkout"],  # nonsensical for this domain, but must not collide
             adapter_fn=api_surface.scan,
         ),

@@ -81,7 +81,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["host", "repo", "endpoint", "firmware_image", "cloud_resource", "identity"]
+          "enum": ["host", "repo", "endpoint", "firmware_image", "cloud_resource", "identity", "network_segment"]
         },
         "ref": { "type": "string", "minLength": 1 }
       }

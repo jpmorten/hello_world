@@ -45,6 +45,7 @@ class ScopeResolution:
     target_ref: str
     asset_id: str
     entity: str
+    asset_type: str
     criticality: str
     owner_team: str
     scope_ref: str
@@ -151,6 +152,7 @@ class ScopeModel:
                     target_ref=target_ref,
                     asset_id=asset["asset_id"],
                     entity=self.entities[asset["entity"]],
+                    asset_type=asset["type"],
                     criticality=asset["criticality"],
                     owner_team=asset["owner_team"],
                     scope_ref=f"assets.yaml#{asset['asset_id']}",
@@ -162,6 +164,30 @@ class ScopeModel:
         if exclusion is not None:
             raise ScopeViolation(target_ref, f"excluded: {exclusion['reason']}")
         return self.resolve(target_ref)
+
+    def targets(self, *, scheme: Optional[str] = None, asset_type: Optional[str] = None) -> list[str]:
+        """Flattened target refs across assets, optionally filtered by the
+        asset's declared `type` and/or the target ref's scheme prefix.
+
+        This is how a Tier 1 domain plans its own decomposition into
+        workers (engine/domains.py): e.g. infra-network asks for every
+        `cidr:` target (one worker per subnet) plus every target on a
+        `network_device`-typed asset (one worker per firewall platform).
+        It does not consult exclusions — an excluded target still comes
+        back here and is refused later, the same way any other target is,
+        when the worker's own assert_in_scope call runs. That keeps
+        exclusion handling in one place instead of duplicating it into
+        every domain's planning step.
+        """
+        results = []
+        for asset in self.assets:
+            if asset_type is not None and asset["type"] != asset_type:
+                continue
+            for target_ref in asset["targets"]:
+                if scheme is not None and not target_ref.startswith(f"{scheme}:"):
+                    continue
+                results.append(target_ref)
+        return results
 
     def check_active_authorization(self, target_ref: str, action: str) -> ActiveAuthorization:
         """Active-scan gate: in scope AND a signed, in-window record covers

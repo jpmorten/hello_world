@@ -78,9 +78,37 @@ Build is proceeding per the staged build order. Completed so far:
    (by-domain/remediation-board/compliance-view, baseline-aware posture)
    is step 9's.
 
-Not built yet: domain/worker agent definitions as real Claude Code
-subagents, real (non-mock) adapters, cross-domain correlation and risk
-scoring, the full report suite.
+6. **Remaining Tier 1 agents and their worker patterns** —
+   `engine/domains.py` adds the other seven domains from the design brief
+   (`infra-network`, `infra-cloud`, `firmware-hardware`, `code-firstparty`,
+   `identity-access`, `endpoint-posture`, `data-exposure`) alongside
+   `supply-chain`/`api-surface`, as one `DomainRegistration` entry each:
+   a `decompose_fn(scope_model) -> list[target_ref]` (its worker pattern)
+   plus a mock `adapter_fn` — exactly the "new agent definition file plus
+   a registry entry, nothing more" shape the design calls for.
+   `engine.scope.ScopeModel.targets(scheme=..., asset_type=...)` is the
+   new primitive every decompose_fn is built from — e.g. `infra-network`
+   unions `cidr:` targets (one worker per subnet) with
+   `network_device`-typed assets' targets (one worker per firewall
+   platform), while `code-firstparty` and `supply-chain` deliberately
+   decompose to the *same* repos (SAST and SBOM scanning the same asset is
+   correct, and per-domain fingerprinting means it never collides).
+   `build_domain_specs()` materializes a full (or subset) sweep from the
+   registry against the live scope model. `scope/assets.yaml` grew four
+   example assets (one each of type `network_device`, `firmware`,
+   `data_store`, `cloud_resource`) so every domain has something concrete
+   to decompose into; `location.kind` in `schema/finding.schema.json`
+   gained `network_segment` to represent a subnet-level finding, the one
+   gap step 1's schema had. `.claude/agents/*.md` adds the nine Tier 1
+   subagent definitions (least-privilege tool grants, no Write/Edit) for
+   when this runs as a live Claude Code fleet rather than through
+   `engine/orchestrator.py` directly — each one points at its own
+   `decompose_fn` rather than restating the worker pattern in prose. A
+   full 9-domain sweep against the example inventory now runs end-to-end
+   with zero coverage gaps.
+
+Not built yet: real (non-mock) adapters, cross-domain correlation and
+risk scoring, baseline delta, the full report suite.
 
 ## Running the tests
 

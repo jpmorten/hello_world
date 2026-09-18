@@ -34,7 +34,6 @@ AdapterFn = Callable[[str, ScopeResolution], list[dict]]
 class DomainSpec:
     domain: str
     worker_role: str
-    asset_type: str
     targets: list[str]
     adapter_fn: AdapterFn
 
@@ -202,7 +201,7 @@ class Orchestrator:
             "entity": resolution.entity,
             "asset": {
                 "asset_id": resolution.asset_id,
-                "type": spec.asset_type,
+                "type": resolution.asset_type,
                 "owner_team": resolution.owner_team,
                 "criticality": resolution.criticality,
             },

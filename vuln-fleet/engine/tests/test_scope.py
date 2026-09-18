@@ -26,6 +26,7 @@ def test_repo_target_resolves_to_its_asset():
 
     assert resolution.asset_id == "svc-checkout"
     assert resolution.entity == "Stibo Systems"
+    assert resolution.asset_type == "service"
     assert resolution.criticality == "high"
     assert resolution.scope_ref == "assets.yaml#svc-checkout"
 
@@ -150,6 +151,58 @@ def test_non_mapping_yaml_top_level_rejected(tmp_path):
 
     with pytest.raises(ScopeConfigError, match="expected a YAML mapping"):
         ScopeModel(bad_assets, FIXTURE_DIR / "exclusions.yaml", FIXTURE_DIR / "authorized-active.yaml")
+
+
+def test_targets_filters_by_scheme_only():
+    model = _model()
+
+    assert set(model.targets(scheme="repo")) == {"repo:stibo/checkout", "repo:stibo/mdm-core"}
+
+
+def test_targets_filters_by_asset_type_only():
+    model = _model()
+
+    # both fixture assets are type "service", so both contribute their targets
+    assert set(model.targets(asset_type="service")) == {
+        "repo:stibo/checkout",
+        "repo:stibo/mdm-core",
+        "cidr:10.20.0.0/24",
+    }
+
+
+def test_targets_combined_scheme_and_asset_type():
+    model = _model()
+
+    assert model.targets(scheme="cidr", asset_type="service") == ["cidr:10.20.0.0/24"]
+
+
+def test_targets_no_filters_returns_everything():
+    model = _model()
+
+    assert set(model.targets()) == {"repo:stibo/checkout", "repo:stibo/mdm-core", "cidr:10.20.0.0/24"}
+
+
+def test_targets_no_match_returns_empty_list():
+    model = _model()
+
+    assert model.targets(asset_type="no-such-type") == []
+    assert model.targets(scheme="ip") == []
+
+
+def test_targets_does_not_consult_exclusions(tmp_path):
+    """targets() is a planning aid, not a scope decision: an excluded
+    target still comes back from it. assert_in_scope is what refuses it,
+    later, when a worker actually tries to touch it — exclusion handling
+    lives in exactly one place, not duplicated into every domain's plan."""
+    excluding = tmp_path / "exclusions.yaml"
+    excluding.write_text(
+        yaml.safe_dump({"exclusions": [{"pattern": "repo:stibo/checkout", "reason": "test exclusion"}]})
+    )
+    model = ScopeModel(FIXTURE_DIR / "assets.yaml", excluding, FIXTURE_DIR / "authorized-active.yaml")
+
+    assert "repo:stibo/checkout" in model.targets(scheme="repo")
+    with pytest.raises(ScopeViolation, match="excluded"):
+        model.assert_in_scope("repo:stibo/checkout")
 
 
 def test_real_scope_files_load_without_error():
