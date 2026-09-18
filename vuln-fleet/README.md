@@ -57,8 +57,30 @@ Build is proceeding per the staged build order. Completed so far:
    at the moment of the trigger so the caller can terminate/flush them.
    Every decision streams through the step-2 logbus as it happens.
 
-Not built yet: domain/worker agent definitions, real adapters,
-dedupe/correlation/risk scoring, reports.
+5. **Orchestrator end-to-end (mock adapters)** — `engine/orchestrator.py`:
+   `Orchestrator.run()` closes the full spawn → worker → rollup → log →
+   report loop for `supply-chain` and `api-surface` (the two domains that
+   need no active scanning), against `adapters/mock/*.py` synthetic
+   adapters. A domain is a `DomainSpec` entry (targets + adapter_fn), not
+   a code change — adding one is exactly the "declarative, extensible"
+   shape the design calls for. Each target becomes a Tier 2 worker through
+   `SpawnManager`; a target that's out of scope or excluded is refused via
+   `engine/scope.py`, logged as a real `scope_violation` event, and
+   recorded as a coverage gap on that domain's rollup — the run finishes
+   regardless. Findings pass through `schema/validate.py` before they're
+   logged or written anywhere. `engine/dedupe.py` (new, minimal by
+   design) gives every finding a deterministic `finding_id`
+   (CVE-based, falling back to title when there's no CVE) and collapses
+   exact re-reports; the richer cross-domain correlation and baseline
+   delta (new/resolved/recurring/regressed) are step 8's job. Every run
+   writes `reports/<run_id>/findings.json` and a `posture.md` naming its
+   coverage gaps by target and reason — the fuller report suite
+   (by-domain/remediation-board/compliance-view, baseline-aware posture)
+   is step 9's.
+
+Not built yet: domain/worker agent definitions as real Claude Code
+subagents, real (non-mock) adapters, cross-domain correlation and risk
+scoring, the full report suite.
 
 ## Running the tests
 

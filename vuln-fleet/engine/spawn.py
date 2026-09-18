@@ -169,6 +169,12 @@ class SpawnManager:
             details=details,
         )
 
+    def emit_event_for(self, handle: AgentHandle, event_type: str, severity: str, message: str, details=None) -> None:
+        """Public hook for a caller (e.g. the orchestrator) to log a
+        domain-specific event — `finding`, `rollup` — under an agent's own
+        identity, using the same lineage this manager already tracks for it."""
+        self._emit_for_handle(handle, event_type, severity, message, details=details)
+
     def _refuse(self, *, tier: int, parent: Optional[AgentHandle], domain: str, reason: str, message: str) -> None:
         parent_agent_id = parent.agent_id if parent else self.orchestrator_agent_id
         parent_span_id = parent.span_id if parent else self.orchestrator_span_id
