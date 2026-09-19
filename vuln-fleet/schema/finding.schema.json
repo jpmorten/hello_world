@@ -49,7 +49,8 @@
         "supply-chain",
         "identity-access",
         "endpoint-posture",
-        "data-exposure"
+        "data-exposure",
+        "red-team-recon"
       ]
     },
     "title": { "type": "string", "minLength": 1, "maxLength": 300 },
@@ -81,7 +82,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["host", "repo", "endpoint", "firmware_image", "cloud_resource", "identity", "network_segment"]
+          "enum": ["host", "repo", "endpoint", "firmware_image", "cloud_resource", "identity", "network_segment", "dns_domain"]
         },
         "ref": { "type": "string", "minLength": 1 }
       }

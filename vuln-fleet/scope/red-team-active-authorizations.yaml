@@ -1,0 +1,11 @@
+authorizations:
+- authorization_ref: red-team-example.com-20260919T053821Z
+  scope:
+  - domain:example.com
+  actions:
+  - external_recon_active
+  approved_by: build-verification@vuln-fleet.local
+  signed_at: '2026-09-19T05:38:21Z'
+  valid_from: '2026-09-19T05:38:21Z'
+  valid_until: '2026-09-20T05:38:21Z'
+  signature: SELF-ATTESTED

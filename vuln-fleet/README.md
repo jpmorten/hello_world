@@ -306,9 +306,85 @@ Build is proceeding per the staged build order. Completed so far:
     this whole project has held to since step 1: never report a number
     you can't evidence.
 
-Not built yet: real adapters for the remaining 6 domains — blocked on
-real credentialed infrastructure access this exercise doesn't have, not
-on more engineering effort.
+13. **Blue/red/purple: `red-team-recon`, an external-target adversary-perspective
+    front end** — `adapters/dns_recon.py` reconnoiters an arbitrary,
+    user-supplied DNS domain the way a red team would: real DNS record
+    hygiene, real SPF/DMARC email-spoofing posture, and real subdomain/
+    certificate exposure via public Certificate Transparency logs, all
+    passive (no traffic to the target itself, no authorization needed —
+    the same as visiting the domain's website would require). With an
+    explicit `--authorize-active` self-attestation
+    (`scope/red-team-active-authorizations.yaml`, a 24-hour-lived twin of
+    `scope/authorized-active.yaml` for a target that has no internal
+    security-ops lead to sign off on it), it also runs a TLS handshake, a
+    single HTTPS GET for security headers, and a HEAD-only check of a
+    couple of well-known accidental-exposure paths — every one
+    indistinguishable from an ordinary browser visit. None of it exploits
+    anything: `check_exposed_paths` never even reads a file's body, only
+    its HTTP status, so a real secret it finds exposed can never be
+    captured or logged by this scan. It reports the *opportunity*, for a
+    defender to close, never a demonstration that it was used.
+
+    This is **not** a bolt-on separate red-team system: a finding from it
+    validates against the same `schema/finding.schema.json`
+    (`domain: red-team-recon`), runs through the same `engine/risk.py`
+    scoring and `engine/reports.py` report suite every internal-asset
+    domain's findings do. The blue/purple synthesis this project asked
+    for *is* that shared pipeline — schema, scope enforcement, dedup,
+    risk scoring, reporting — and `red-team-recon` is the
+    adversary-perspective front end that feeds it, exactly like
+    `supply-chain`/`firmware-hardware`/`api-surface` are the
+    defender-perspective ones. It's deliberately not one of the design
+    brief's nine Tier 1 domains (not in `DOMAIN_REGISTRY`, never part of
+    `full-sweep`/`delta-sweep`): it targets an arbitrary external domain,
+    not a Stibo asset, so `engine/cli.py`'s `red-team-recon` subcommand
+    invokes it directly, the same way `cmd_target` already builds one-off
+    `DomainSpec`s for a single ad hoc target.
+
+    Two of the four things a real red-team engagement might normally
+    include — active exploitation of anything discovered, and
+    authenticated/credentialed testing — are explicitly, permanently out
+    of scope, not a placeholder: "report every opportunity, exploit none
+    of them" was the one hard requirement this capability was built
+    against, so it's enforced in the adapter's own design (no payloads,
+    no injection, no credential attacks, no port scanning beyond 443
+    anywhere in `adapters/dns_recon.py`), not left to operator discipline
+    alone.
+
+    Verified live against a real domain during development: IANA's
+    `example.com` (reserved by RFC 2606 specifically for documentation
+    and examples, so no ownership question applies). The passive run
+    found 5 real subdomains and a wildcard certificate via crt.sh's live
+    Certificate Transparency data; SPF/DMARC were both correctly
+    configured, so — honestly — no email-security findings fired. The
+    `--authorize-active` run surfaced one finding worth calling out
+    specifically: `check_tls_posture` reported `interception_suspected`
+    instead of a normal TLS-posture finding, because this fleet's own
+    sandboxed execution environment routes all outbound HTTPS through a
+    TLS-terminating egress proxy — a live handshake from here observes
+    that proxy's re-issued certificate, not `example.com`'s real one.
+    Rather than silently presenting the proxy's certificate as
+    `example.com`'s own (which would have been exactly the kind of
+    unevidenced, environment-specific-but-uncaught error this whole
+    project's discipline exists to prevent), `check_tls_posture`
+    independently cross-checks the live handshake's certificate serial
+    number against what Certificate Transparency logs actually show for
+    the domain — a real, live check catching a real, live accuracy bug
+    before it could ever reach a report, the same way the KEV/User-Agent
+    issue was caught while building `adapters/cve_intel.py` in step 7.
+    The HTTP-layer checks (missing security headers, `Server: cloudflare`
+    banner disclosure, no `security.txt`) were unaffected by the TLS
+    interception and are genuine. `scope/red-team-targets.yaml` and
+    `scope/red-team-active-authorizations.yaml` carry this verification
+    run's real entries as the first (and, as of this writing, only)
+    records in each file.
+
+Not built yet: real adapters for the remaining 6 Tier 1 domains — blocked
+on real credentialed infrastructure access this exercise doesn't have,
+not on more engineering effort. `red-team-recon` is complete for the
+scope described above; extending it (more passive signal sources, more
+benign active checks) is additional engineering effort, not blocked on
+anything this exercise lacks.
 
 ## Running the tests
 

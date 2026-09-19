@@ -2,8 +2,9 @@ import os
 import re
 
 import pytest
+import yaml
 
-from adapters import cve_intel, osv
+from adapters import cve_intel, dns_recon, osv
 from engine import cli
 
 _LODASH_VULN_FIXTURE = {
@@ -106,6 +107,41 @@ def _redirect_io_dirs(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _redirect_red_team_scope_files(tmp_path, monkeypatch):
+    """Tests must never write to the real scope/red-team-targets.yaml or
+    scope/red-team-active-authorizations.yaml -- redirect both to empty
+    copies under tmp_path, same shape as the real files' steady state."""
+    targets_path = tmp_path / "red-team-targets.yaml"
+    targets_path.write_text(
+        yaml.safe_dump({"entities": [{"id": "red-team-engagement", "name": "Red-team engagement (externally supplied target)"}], "assets": []})
+    )
+    auth_path = tmp_path / "red-team-active-authorizations.yaml"
+    auth_path.write_text(yaml.safe_dump({"authorizations": []}))
+    monkeypatch.setattr(cli, "RED_TEAM_TARGETS_PATH", targets_path)
+    monkeypatch.setattr(cli, "RED_TEAM_AUTH_PATH", auth_path)
+    dns_recon._ACTIVE_AUTHORIZATION_BY_TARGET.clear()
+    yield
+    dns_recon._ACTIVE_AUTHORIZATION_BY_TARGET.clear()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_dns_recon_network(monkeypatch):
+    """red-team-recon's own real network seams (DNS resolution, crt.sh,
+    TLS handshake, HTTP requests) -- kept hermetic here the same way
+    supply-chain/firmware-hardware's are, via the module's own seam
+    functions rather than duplicating dns_recon's own unit tests."""
+    monkeypatch.setattr(dns_recon, "resolve_dns_records", lambda domain: {"TXT": []})
+    monkeypatch.setattr(
+        dns_recon,
+        "enumerate_subdomains_via_ct",
+        lambda domain: {"available": False, "subdomains": set(), "serials": set(), "wildcard": False},
+    )
+    monkeypatch.setattr(dns_recon, "check_tls_posture", lambda domain, known_cert_serials=None: {"reachable": False, "interception_suspected": False})
+    monkeypatch.setattr(dns_recon, "check_http_security_headers", lambda domain: None)
+    monkeypatch.setattr(dns_recon, "check_exposed_paths", lambda domain: {})
+
+
 def test_full_sweep_command_runs_and_prints_summary(capsys, tmp_path):
     exit_code = cli.main(["full-sweep", "--run-id", "test-run"])
 
@@ -143,6 +179,57 @@ def test_target_command_out_of_scope_refuses(capsys):
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "Refused" in err
+
+
+# -- red-team-recon --------------------------------------------------------
+
+
+def test_red_team_recon_rejects_malformed_domain(capsys):
+    exit_code = cli.main(["red-team-recon", "not a domain!", "--requested-by", "tester@example.com"])
+
+    assert exit_code == 1
+    assert "doesn't look like a bare DNS domain" in capsys.readouterr().err
+
+
+def test_red_team_recon_passive_only_runs_and_registers_target(capsys, tmp_path):
+    exit_code = cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--run-id", "rt-1"])
+
+    assert exit_code == 0
+    out, err = capsys.readouterr()
+    assert "Run rt-1:" in out
+    assert "running passive checks only" in err
+
+    registered = yaml.safe_load(cli.RED_TEAM_TARGETS_PATH.read_text())
+    assert registered["assets"][0]["targets"] == ["domain:example.com"]
+    assert registered["assets"][0]["owner_team"] == "tester@example.com"
+
+
+def test_red_team_recon_registering_the_same_domain_twice_does_not_duplicate():
+    cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--run-id", "rt-a"])
+    cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--run-id", "rt-b"])
+
+    registered = yaml.safe_load(cli.RED_TEAM_TARGETS_PATH.read_text())
+    assert len(registered["assets"]) == 1
+
+
+def test_red_team_recon_authorize_active_writes_authorization_and_enables_active_checks(capsys):
+    exit_code = cli.main(
+        ["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--authorize-active", "--run-id", "rt-2"]
+    )
+
+    assert exit_code == 0
+    authorizations = yaml.safe_load(cli.RED_TEAM_AUTH_PATH.read_text())["authorizations"]
+    assert len(authorizations) == 1
+    assert authorizations[0]["approved_by"] == "tester@example.com"
+    assert authorizations[0]["actions"] == ["external_recon_active"]
+    assert authorizations[0]["signature"] == "SELF-ATTESTED"
+
+
+def test_red_team_recon_without_authorize_active_leaves_authorization_file_empty():
+    cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--run-id", "rt-3"])
+
+    authorizations = yaml.safe_load(cli.RED_TEAM_AUTH_PATH.read_text())["authorizations"]
+    assert authorizations == []
 
 
 def test_kill_command_writes_flag_for_most_recent_active_run(capsys, tmp_path):

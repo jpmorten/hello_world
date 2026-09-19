@@ -87,55 +87,72 @@ def _matches_target(target_ref: str, pattern: str) -> bool:
     return False
 
 
+def _as_path_list(value: Path | str | list[Path | str]) -> list[Path]:
+    if isinstance(value, (list, tuple)):
+        return [Path(v) for v in value]
+    return [Path(value)]
+
+
 class ScopeModel:
     def __init__(
         self,
-        assets_path: Path | str,
+        assets_path: Path | str | list[Path | str],
         exclusions_path: Path | str,
-        authorized_active_path: Path | str,
+        authorized_active_path: Path | str | list[Path | str],
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
+        """assets_path and authorized_active_path each accept either one
+        path or a list of paths, merged together -- how a red-team-recon
+        run keeps its externally-supplied targets/self-attested
+        authorizations (scope/red-team-targets.yaml,
+        scope/red-team-active-authorizations.yaml) in their own files,
+        clearly separate from Stibo's own CMDB-derived
+        assets.yaml/authorized-active.yaml, while still resolving through
+        one ScopeModel. exclusions_path stays a single file: exclusions
+        apply fleet-wide and have never needed to vary per source."""
         self._now = now_fn
         self.entities: dict[str, str] = {}
         self.assets: list[dict] = []
         self.exclusions: list[dict] = []
         self.authorizations: list[dict] = []
-        self._load(Path(assets_path), Path(exclusions_path), Path(authorized_active_path))
+        self._load(_as_path_list(assets_path), Path(exclusions_path), _as_path_list(authorized_active_path))
 
-    def _load(self, assets_path: Path, exclusions_path: Path, authorized_active_path: Path) -> None:
-        assets_doc = _read_yaml_mapping(assets_path)
+    def _load(self, assets_paths: list[Path], exclusions_path: Path, authorized_active_paths: list[Path]) -> None:
+        for assets_path in assets_paths:
+            assets_doc = _read_yaml_mapping(assets_path)
+
+            for entity in assets_doc.get("entities") or []:
+                if "id" not in entity or "name" not in entity:
+                    raise ScopeConfigError(f"entity missing id/name: {entity!r}")
+                self.entities[entity["id"]] = entity["name"]
+
+            for asset in assets_doc.get("assets") or []:
+                missing = [f for f in _REQUIRED_ASSET_FIELDS if f not in asset]
+                if missing:
+                    raise ScopeConfigError(f"asset {asset.get('asset_id', '?')!r} missing field(s): {missing}")
+                if asset["entity"] not in self.entities:
+                    raise ScopeConfigError(
+                        f"asset {asset['asset_id']!r} references unknown entity {asset['entity']!r}"
+                    )
+                if asset["criticality"] not in _VALID_CRITICALITY:
+                    raise ScopeConfigError(
+                        f"asset {asset['asset_id']!r} has invalid criticality {asset['criticality']!r}"
+                    )
+                self.assets.append(asset)
+
         exclusions_doc = _read_yaml_mapping(exclusions_path)
-        auth_doc = _read_yaml_mapping(authorized_active_path)
-
-        for entity in assets_doc.get("entities") or []:
-            if "id" not in entity or "name" not in entity:
-                raise ScopeConfigError(f"entity missing id/name: {entity!r}")
-            self.entities[entity["id"]] = entity["name"]
-
-        for asset in assets_doc.get("assets") or []:
-            missing = [f for f in _REQUIRED_ASSET_FIELDS if f not in asset]
-            if missing:
-                raise ScopeConfigError(f"asset {asset.get('asset_id', '?')!r} missing field(s): {missing}")
-            if asset["entity"] not in self.entities:
-                raise ScopeConfigError(
-                    f"asset {asset['asset_id']!r} references unknown entity {asset['entity']!r}"
-                )
-            if asset["criticality"] not in _VALID_CRITICALITY:
-                raise ScopeConfigError(
-                    f"asset {asset['asset_id']!r} has invalid criticality {asset['criticality']!r}"
-                )
-            self.assets.append(asset)
-
         for exclusion in exclusions_doc.get("exclusions") or []:
             if "pattern" not in exclusion or "reason" not in exclusion:
                 raise ScopeConfigError(f"exclusion missing pattern/reason: {exclusion!r}")
             self.exclusions.append(exclusion)
 
-        for auth in auth_doc.get("authorizations") or []:
-            missing = [f for f in _REQUIRED_AUTH_FIELDS if f not in auth]
-            if missing:
-                raise ScopeConfigError(f"authorization {auth.get('authorization_ref', '?')!r} missing field(s): {missing}")
-            self.authorizations.append(auth)
+        for authorized_active_path in authorized_active_paths:
+            auth_doc = _read_yaml_mapping(authorized_active_path)
+            for auth in auth_doc.get("authorizations") or []:
+                missing = [f for f in _REQUIRED_AUTH_FIELDS if f not in auth]
+                if missing:
+                    raise ScopeConfigError(f"authorization {auth.get('authorization_ref', '?')!r} missing field(s): {missing}")
+                self.authorizations.append(auth)
 
     def _excluded_by(self, target_ref: str) -> Optional[dict]:
         for exclusion in self.exclusions:

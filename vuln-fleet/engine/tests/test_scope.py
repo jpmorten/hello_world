@@ -217,3 +217,87 @@ def test_real_scope_files_load_without_error():
 
     assert model.assets
     assert model.resolve("repo:stibo/checkout").asset_id == "svc-checkout"
+
+
+def test_real_red_team_scope_files_load_and_merge_without_error():
+    """scope/red-team-targets.yaml and scope/red-team-active-
+    authorizations.yaml -- the two files engine.cli's red-team-recon
+    subcommand merges alongside assets.yaml/authorized-active.yaml -- must
+    also parse cleanly even while still empty (their steady state until
+    someone actually runs red-team-recon)."""
+    repo_scope_dir = Path(__file__).parent.parent.parent / "scope"
+
+    model = ScopeModel(
+        [repo_scope_dir / "assets.yaml", repo_scope_dir / "red-team-targets.yaml"],
+        repo_scope_dir / "exclusions.yaml",
+        [repo_scope_dir / "authorized-active.yaml", repo_scope_dir / "red-team-active-authorizations.yaml"],
+    )
+
+    assert model.resolve("repo:stibo/checkout").asset_id == "svc-checkout"
+    assert "red-team-engagement" in model.entities
+
+
+# -- multi-file assets/authorizations merging -----------------------------
+
+
+def test_assets_path_accepts_a_list_and_merges_entities_and_assets(tmp_path):
+    extra_assets = tmp_path / "extra-assets.yaml"
+    extra_assets.write_text(
+        yaml.safe_dump(
+            {
+                "entities": [{"id": "external", "name": "External Target"}],
+                "assets": [
+                    {
+                        "asset_id": "extra-domain",
+                        "entity": "external",
+                        "type": "external_domain",
+                        "owner_team": "someone@example.com",
+                        "criticality": "medium",
+                        "targets": ["domain:extra.example.com"],
+                    }
+                ],
+            }
+        )
+    )
+    model = ScopeModel(
+        [FIXTURE_DIR / "assets.yaml", extra_assets], FIXTURE_DIR / "exclusions.yaml", FIXTURE_DIR / "authorized-active.yaml"
+    )
+
+    assert model.resolve("repo:stibo/checkout").asset_id == "svc-checkout"
+    resolution = model.resolve("domain:extra.example.com")
+    assert resolution.asset_id == "extra-domain"
+    assert resolution.entity == "External Target"
+
+
+def test_authorized_active_path_accepts_a_list_and_merges_authorizations(tmp_path):
+    extra_auth = tmp_path / "extra-auth.yaml"
+    extra_auth.write_text(
+        yaml.safe_dump(
+            {
+                "authorizations": [
+                    {
+                        "authorization_ref": "extra-auth-ref",
+                        "scope": ["ip:10.20.0.5"],
+                        "actions": ["dast"],
+                        "approved_by": "someone@example.com",
+                        "valid_from": "2026-09-01T00:00:00Z",
+                        "valid_until": "2026-09-30T23:59:59Z",
+                    }
+                ]
+            }
+        )
+    )
+    model = _model_with_authorized_active_paths([FIXTURE_DIR / "authorized-active.yaml", extra_auth])
+
+    auth = model.check_active_authorization("ip:10.20.0.5", "dast")
+    assert auth.authorization_ref == "extra-auth-ref"
+
+
+def _model_with_authorized_active_paths(authorized_active_paths):
+    dt = datetime.fromisoformat("2026-09-15T00:00:00+00:00")
+    return ScopeModel(
+        FIXTURE_DIR / "assets.yaml",
+        FIXTURE_DIR / "exclusions.yaml",
+        authorized_active_paths,
+        now_fn=lambda: dt,
+    )

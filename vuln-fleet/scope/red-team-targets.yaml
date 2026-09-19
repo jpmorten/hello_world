@@ -1,0 +1,11 @@
+entities:
+- id: red-team-engagement
+  name: Red-team engagement (externally supplied target)
+assets:
+- asset_id: red-team-example.com
+  entity: red-team-engagement
+  type: external_domain
+  owner_team: build-verification@vuln-fleet.local
+  criticality: medium
+  targets:
+  - domain:example.com

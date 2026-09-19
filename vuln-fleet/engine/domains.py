@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from adapters import api_surface, firmware_hardware, supply_chain
+from adapters import api_surface, dns_recon, firmware_hardware, supply_chain
 from adapters.mock import (
     code_firstparty,
     data_exposure,
@@ -119,6 +119,31 @@ DOMAIN_REGISTRY: dict[str, DomainRegistration] = {
         adapter_fn=data_exposure.scan,
     ),
 }
+
+
+# Not in DOMAIN_REGISTRY / build_domain_specs' full sweep on purpose: the
+# nine domains above are the design brief's fixed Tier 1 scope for Stibo's
+# own internal-CMDB-derived inventory (test_registry_has_all_nine_design_
+# brief_domains asserts exactly that set). red-team-recon is a separate,
+# opt-in capability -- reconnaissance of an arbitrary, user-supplied
+# external DNS domain, not a Stibo asset at all -- so it's never included
+# just by running full-sweep/delta-sweep. engine/cli.py's
+# `red-team-recon` subcommand constructs a one-off DomainSpec from this
+# registration directly (the same way cmd_target already builds one-off
+# DomainSpecs for a single ad hoc target), reusing the exact same
+# Orchestrator/SpawnManager/ScopeModel/schema/risk/report pipeline every
+# other domain runs through -- a red-team finding is validated, scored,
+# and reported exactly the way a blue-team sweep's finding is. That
+# shared pipeline *is* this fleet's blue/purple layer; red-team-recon is
+# the adversary-perspective front end that feeds it, not a separate
+# system bolted on next to it.
+RED_TEAM_DOMAIN = DomainRegistration(
+    domain="red-team-recon",
+    worker_role="external-recon-worker",
+    # One worker per externally-supplied DNS domain.
+    decompose_fn=lambda scope: scope.targets(scheme="domain"),
+    adapter_fn=dns_recon.scan,
+)
 
 
 def build_domain_specs(scope_model: ScopeModel, domains: Optional[list[str]] = None) -> list[DomainSpec]:
