@@ -59,7 +59,7 @@ def test_severity_band_thresholds(score, expected_band, expected_sla):
 # -- write_reports: file set ----------------------------------------------------
 
 
-def test_write_reports_creates_all_six_files(tmp_path):
+def test_write_reports_creates_all_seven_files(tmp_path):
     findings = [_finding()]
     issues = [_issue()]
     rollups = {"supply-chain": _FakeRollup(targets_attempted=["repo:stibo/checkout"], findings=findings)}
@@ -67,7 +67,10 @@ def test_write_reports_creates_all_six_files(tmp_path):
 
     paths = reports.write_reports(tmp_path, "run-1", findings, issues, rollups, delta, previous_run_id=None)
 
-    assert set(paths) == {"findings_json", "issues_json", "posture_md", "by_domain_md", "remediation_board_md", "compliance_view_md"}
+    assert set(paths) == {
+        "findings_json", "issues_json", "posture_md", "by_domain_md",
+        "remediation_board_md", "compliance_view_md", "attack_scenarios_md",
+    }
     for path_str in paths.values():
         assert Path(path_str).exists()
 
@@ -257,3 +260,86 @@ def test_compliance_view_no_other_tags_section_when_none_present():
     text = reports._render_compliance_view(findings)
 
     assert "## Other tags present this run" not in text
+
+
+# -- attack-scenarios.md / posture.md attention-points section -----------------
+
+
+def _scenario(**overrides) -> dict:
+    scenario = {
+        "scenario_id": "s1",
+        "run_id": "run-1",
+        "title": "Chain A into B",
+        "attacker_goal": "Reach the data lake",
+        "narrative": "An attacker would first do X, then use it to do Y.",
+        "attack_path": [
+            {"step": 1, "description": "Exploit finding A", "based_on_finding_id": "f1"},
+            {"step": 2, "description": "Pivot using the result", "based_on_finding_id": None},
+        ],
+        "chained_finding_ids": ["f1", "f2"],
+        "likelihood": "medium",
+        "confidence": 0.6,
+        "potential_impact": "Exposure of customer PII.",
+        "mitre_attack_techniques": ["T1590"],
+        "status": "predicted",
+        "evidence_ref": ["sbom://f1"],
+    }
+    scenario.update(overrides)
+    return scenario
+
+
+def test_attack_scenarios_report_says_stage_did_not_run_when_none():
+    text = reports._render_attack_scenarios(None, [])
+
+    assert "did not run" in text
+
+
+def test_attack_scenarios_report_says_ran_with_nothing_kept_when_empty_list():
+    text = reports._render_attack_scenarios([], [])
+
+    assert "ran; no scenario met the bar" in text
+
+
+def test_attack_scenarios_report_renders_full_scenario_detail():
+    findings = [_finding(finding_id="f1"), _finding(finding_id="f2", title="Other finding")]
+    text = reports._render_attack_scenarios([_scenario()], findings)
+
+    assert "## Chain A into B" in text
+    assert "Reach the data lake" in text
+    assert "medium" in text
+    assert "0.60" in text
+    assert "T1590" in text
+    assert "Exploit finding A (based on: Vulnerable dependency: lodash@4.17.15)" in text
+    assert "Other finding" in text
+
+
+def test_attack_scenarios_report_never_claims_a_scenario_was_carried_out():
+    """The schema locks status to "predicted" already; this confirms the
+    renderer's own per-scenario section (as opposed to the fixed
+    boilerplate disclaimer, which legitimately says these words while
+    negating them) never independently introduces language implying a
+    scenario was validated or carried out."""
+    text = reports._render_attack_scenarios([_scenario()], [_finding(finding_id="f1"), _finding(finding_id="f2")])
+    per_scenario_text = text.split("## Chain A into B", 1)[1]
+
+    for banned in ("confirmed", "exploited", "validated", "successfully"):
+        assert banned not in per_scenario_text.lower()
+
+
+def test_posture_attack_scenarios_section_distinguishes_not_run_from_empty():
+    rollups = {"supply-chain": _FakeRollup(targets_attempted=[])}
+
+    not_run_text = reports._render_posture("run-1", [], [], rollups, {"new": [], "recurring": [], "resolved": [], "regressed": []}, None, None)
+    ran_empty_text = reports._render_posture("run-1", [], [], rollups, {"new": [], "recurring": [], "resolved": [], "regressed": []}, None, [])
+
+    assert "did not run" in not_run_text
+    assert "ran; no scenario met the bar" in ran_empty_text
+
+
+def test_posture_attack_scenarios_section_lists_predicted_scenarios():
+    rollups = {"supply-chain": _FakeRollup(targets_attempted=[])}
+
+    text = reports._render_posture("run-1", [], [], rollups, {"new": [], "recurring": [], "resolved": [], "regressed": []}, None, [_scenario()])
+
+    assert "Chain A into B" in text
+    assert "predictions only, nothing here was tested, attempted, or validated" in text.lower()

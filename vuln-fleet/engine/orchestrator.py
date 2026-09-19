@@ -21,12 +21,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from engine import baseline, reports
+from engine.attack_scenarios import AnalystFn, finalize_scenarios
 from engine.dedupe import compute_finding_id, correlate_findings, dedupe_findings
 from engine.logbus import LogBus, Sink
 from engine.risk import score_finding
 from engine.scope import ScopeModel, ScopeResolution, ScopeViolation
 from engine.spawn import SpawnManager, SpawnRefused
-from schema.validate import validate_finding
+from schema.validate import validate_attack_scenario, validate_finding
 
 AdapterFn = Callable[[str, ScopeResolution], list[dict]]
 
@@ -59,9 +60,15 @@ class Orchestrator:
         previous_run_id: Optional[str] = None,
         kill_flag_path: Optional[Path | str] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        attack_scenario_fn: Optional[AnalystFn] = None,
     ):
         self.run_id = run_id
         self.scope_model = scope_model
+        # None (the default) means the feature is honestly off: no Tier
+        # 0.5 analysis stage runs, no attack_scenario events are logged,
+        # and run()'s result has an empty attack_scenarios list -- never
+        # a silently-skipped step dressed up as "nothing to report."
+        self.attack_scenario_fn = attack_scenario_fn
         self.reports_root = Path(report_dir)
         self.report_dir = self.reports_root / run_id
         self.previous_run_id = previous_run_id
@@ -139,8 +146,9 @@ class Orchestrator:
 
         deduped, delta = baseline.compute_and_apply_delta(deduped, self.reports_root, self.previous_run_id)
         issues = correlate_findings(deduped)
+        scenarios = self._run_attack_scenario_analysis(deduped, issues)
         report_paths = reports.write_reports(
-            self.report_dir, self.run_id, deduped, issues, self.rollups, delta, self.previous_run_id
+            self.report_dir, self.run_id, deduped, issues, self.rollups, delta, self.previous_run_id, scenarios
         )
 
         self._emit_root_event(
@@ -149,7 +157,75 @@ class Orchestrator:
             f"Run {self.run_id} complete: {len(deduped)} finding(s) across {len(self.rollups)} domain(s).",
             details={"finding_count": len(deduped), "domains": list(self.rollups.keys()), "delta": delta},
         )
-        return {"findings": deduped, "rollups": self.rollups, "issues": issues, "delta": delta, "report_paths": report_paths}
+        return {
+            "findings": deduped,
+            "rollups": self.rollups,
+            "issues": issues,
+            "delta": delta,
+            "report_paths": report_paths,
+            "attack_scenarios": scenarios,
+        }
+
+    def _run_attack_scenario_analysis(self, findings: list[dict], issues: list[dict]) -> Optional[list[dict]]:
+        """Tier 0.5: one analysis pass over the whole run's findings, after
+        every domain has reported in -- never per-domain, per-target. See
+        engine/attack_scenarios.py's module docstring for why this exists
+        as a separate module/stage rather than another adapter.
+
+        Returns None (not []) when no analyst is wired in at all -- the
+        report suite needs to say "this stage never ran" distinctly from
+        "it ran and found/kept nothing," the same distinction the rest of
+        this fleet draws between a missing capability and a clean result.
+        """
+        if self.attack_scenario_fn is None:
+            return None
+
+        if self.spawn_manager.kill_switch_active:
+            # A killed run is wrapping up -- no new activity starts,
+            # exactly like a domain _run_domain never reaches (see run()'s
+            # own kill_switch check above). [] (not None): the stage would
+            # have run had the kill switch not tripped, so this isn't "no
+            # analyst wired in," it's "skipped because the run stopped."
+            return []
+
+        handle = self.spawn_manager.spawn(domain="attack-scenario-analysis", agent_role="attack-scenario-analyst")
+
+        if not findings:
+            self.spawn_manager.complete(handle.agent_id, message="No findings this run; nothing to chain into a scenario.")
+            return []
+
+        known_finding_ids = {f["finding_id"] for f in findings}
+        try:
+            raw_scenarios = self.attack_scenario_fn(findings, issues)
+        except Exception as exc:  # an analyst failure is a soft gap, not a crashed run
+            self.spawn_manager.complete(handle.agent_id, event_type="agent_error", message=str(exc))
+            return []
+
+        scenarios, rejections = finalize_scenarios(raw_scenarios, self.run_id, known_finding_ids)
+
+        for rejection in rejections:
+            self.spawn_manager.emit_event_for(
+                handle,
+                "agent_error",
+                "warning",
+                f"Attack scenario rejected: {rejection.raw_title!r} -- {rejection.reason}",
+                details={"reason": rejection.reason, "title": rejection.raw_title},
+            )
+
+        for scenario in scenarios:
+            validate_attack_scenario(scenario)
+            self.spawn_manager.emit_event_for(
+                handle,
+                "attack_scenario",
+                "notice",
+                f"Predicted attack scenario: {scenario['title']}",
+                details=scenario,
+            )
+
+        self.spawn_manager.complete(
+            handle.agent_id, message=f"{len(scenarios)} predicted scenario(s), {len(rejections)} rejected."
+        )
+        return scenarios
 
     def _run_domain(self, spec: DomainSpec) -> DomainRollup:
         domain_handle = self.spawn_manager.spawn(domain=spec.domain, agent_role=spec.domain)

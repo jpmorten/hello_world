@@ -14,6 +14,8 @@ python3 -m engine.cli full-sweep
 
 This picks a timestamped `run_id` automatically (`full-sweep-<UTC timestamp>`), sweeps every domain in `engine/domains.py`'s `DOMAIN_REGISTRY`, and prints a summary: finding/issue counts, the delta vs. nothing (a first run has no baseline, so everything is `new`), any coverage gaps, and the report paths.
 
+After every domain reports in, a Tier 0.5 attack-scenario-analyst pass runs once over the whole run's findings and predicts plausible attack chains — narrative prediction only, nothing tested or attempted (see "Predicted attack scenarios" below and `THREAT-MODEL.md`). `full-sweep`/`delta-sweep` both wire this in by default; `target` and `red-team-recon` don't (there's rarely enough cross-domain material in a single-target run to chain).
+
 **Delta sweep** (same, but diffed against the last completed run):
 
 ```bash
@@ -129,9 +131,19 @@ This writes `reports/<run_id>.kill` — a flag file, not a process signal. The r
 
 A `.kill` flag is scoped to its own `run_id` (which includes a timestamp), so it never needs manual cleanup before a later run — a new run gets a new run_id and a fresh, absent flag.
 
+## Predicted attack scenarios
+
+`reports/<run_id>/attack-scenarios.md` and a summary section in `posture.md` ("Attention points: predicted attack scenarios") list every scenario the attack-scenario-analyst stage predicted this run by chaining two or more findings together — e.g. a subdomain exposure plus a hardcoded credential plus a permissive firewall rule chaining into something worse than any one of them alone.
+
+**These are predictions, not test results.** Nothing in this section was logged into, sent a payload, or otherwise attempted — `schema/attack_scenario.schema.json` locks every scenario's `status` to `predicted`, and the agent that produces them (`.claude/agents/attack-scenario-analyst.md`) has no tool access that could execute anything even if it wanted to. Treat a scenario the same way you'd treat a threat-model reviewer's "here's what I'd try next" note: worth prioritizing the underlying findings over, never worth reporting upward as "attacker did X."
+
+If `posture.md` says this stage "did not run," no attack-scenario analyst was wired into that run (a missing capability, not a clean result) — check that the run went through `full-sweep`/`delta-sweep` (both wire in `analysts/mock/attack_scenario.py`'s placeholder by default, or the real agent in a live Claude Code session) rather than `target`/`red-team-recon`, which don't. A run that says it ran but predicted nothing genuinely had fewer than two findings to chain, or the sweep found none.
+
+The CLI/test path's `analysts/mock/attack_scenario.py` is a clearly-labeled `[MOCK ANALYSIS]` placeholder proving the pipeline, not real analysis — the same role `adapters/mock/*.py` played for Tier 1 domains before real adapters existed for some of them. Every scenario it's capable of producing says so in its own title and narrative text; treat any attack-scenario finding that doesn't carry that label as coming from a live agent's genuine assessment.
+
 ## Handing findings to the SOC
 
-1. A completed run's authoritative output is `reports/<run_id>/`: `findings.json` (full deduplicated set), `issues.json` (CVE-correlated groups with an aggregate risk score), `posture.md` (executive summary), `by-domain.md`, `remediation-board.md`, `compliance-view.md`.
-2. For SIEM ingestion, the event stream (`logs/<run_id>.ndjson`) is the machine-readable record — every `finding` event's `details` field is the same object that ends up in `findings.json`, so nothing in the report suite is derived from data the SIEM didn't also receive.
-3. Hand the SOC `posture.md` for the human-readable summary and `remediation-board.md` for assigned owners/SLAs; point them at `findings.json`/`issues.json` if they need to pull the data into their own tooling.
-4. State the coverage caveat every time until it's no longer true: only `supply-chain`, `firmware-hardware`, and `api-surface` run against real adapters today; the other six domains' findings in any `full-sweep`/`delta-sweep` report are from `adapters/mock/*.py` synthetic data, proving the pipeline, not reporting a real posture for those domains yet. `red-team-recon` reports (a separate, opt-in run, never part of a full sweep) are real in full.
+1. A completed run's authoritative output is `reports/<run_id>/`: `findings.json` (full deduplicated set), `issues.json` (CVE-correlated groups with an aggregate risk score), `posture.md` (executive summary), `by-domain.md`, `remediation-board.md`, `compliance-view.md`, `attack-scenarios.md` (predicted attack chains — see "Predicted attack scenarios" above).
+2. For SIEM ingestion, the event stream (`logs/<run_id>.ndjson`) is the machine-readable record — every `finding` event's `details` field is the same object that ends up in `findings.json`, and every `attack_scenario` event's `details` is the same object that ends up in `attack-scenarios.md`, so nothing in the report suite is derived from data the SIEM didn't also receive.
+3. Hand the SOC `posture.md` for the human-readable summary and `remediation-board.md` for assigned owners/SLAs; point them at `findings.json`/`issues.json` if they need to pull the data into their own tooling. Pass along `attack-scenarios.md` as attention points, clearly labeled as prediction, not as additional confirmed findings.
+4. State the coverage caveat every time until it's no longer true: only `supply-chain`, `firmware-hardware`, and `api-surface` run against real adapters today; the other six domains' findings in any `full-sweep`/`delta-sweep` report are from `adapters/mock/*.py` synthetic data, proving the pipeline, not reporting a real posture for those domains yet. `red-team-recon` reports (a separate, opt-in run, never part of a full sweep) are real in full. Attack scenarios are real predictions over real findings, but produced by `analysts/mock/attack_scenario.py`'s labeled placeholder unless a live agent ran the sweep — state which one it was.

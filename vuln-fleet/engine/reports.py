@@ -61,7 +61,12 @@ def write_reports(
     rollups: dict,
     delta: dict,
     previous_run_id: Optional[str],
+    attack_scenarios: Optional[list[dict]] = None,
 ) -> dict[str, str]:
+    # None means the analysis stage never ran this run (no analyst wired
+    # in); [] means it ran and kept nothing. Both flow through to the
+    # renderers below, which say which one happened -- never collapsed
+    # together here.
     report_dir.mkdir(parents=True, exist_ok=True)
 
     findings_path = report_dir / "findings.json"
@@ -71,7 +76,7 @@ def write_reports(
     issues_path.write_text(json.dumps(issues, indent=2, sort_keys=True))
 
     posture_path = report_dir / "posture.md"
-    posture_path.write_text(_render_posture(run_id, findings, issues, rollups, delta, previous_run_id))
+    posture_path.write_text(_render_posture(run_id, findings, issues, rollups, delta, previous_run_id, attack_scenarios))
 
     by_domain_path = report_dir / "by-domain.md"
     by_domain_path.write_text(_render_by_domain(rollups))
@@ -82,6 +87,9 @@ def write_reports(
     compliance_path = report_dir / "compliance-view.md"
     compliance_path.write_text(_render_compliance_view(findings))
 
+    attack_scenarios_path = report_dir / "attack-scenarios.md"
+    attack_scenarios_path.write_text(_render_attack_scenarios(attack_scenarios, findings))
+
     return {
         "findings_json": str(findings_path),
         "issues_json": str(issues_path),
@@ -89,6 +97,7 @@ def write_reports(
         "by_domain_md": str(by_domain_path),
         "remediation_board_md": str(remediation_path),
         "compliance_view_md": str(compliance_path),
+        "attack_scenarios_md": str(attack_scenarios_path),
     }
 
 
@@ -99,6 +108,7 @@ def _render_posture(
     rollups: dict,
     delta: dict,
     previous_run_id: Optional[str],
+    attack_scenarios: Optional[list[dict]] = None,
 ) -> str:
     lines = [f"# Posture Report — {run_id}", ""]
 
@@ -140,6 +150,39 @@ def _render_posture(
             for target, reason in rollup.targets_failed.items():
                 lines.append(f"  - Coverage gap: `{target}` — {reason}")
     lines.append("")
+
+    lines += ["## Attention points: predicted attack scenarios (white-hat analysis)", ""]
+    if attack_scenarios is None:
+        lines.append(
+            "Attack-scenario analysis did not run this run (no attack-scenario analyst wired into this "
+            "orchestrator run) — this is a missing capability, not a clean result. See "
+            "`.claude/agents/attack-scenario-analyst.md` and `engine/attack_scenarios.py`."
+        )
+        lines.append("")
+    elif not attack_scenarios:
+        lines.append(
+            "Attack-scenario analysis ran; no scenario met the bar to report (fewer than two chainable "
+            "findings this run, or every candidate the analyst proposed was rejected as unevidenced — "
+            "see the run's event log for any `attack_scenario`-rejection entries)."
+        )
+        lines.append("")
+    else:
+        lines.append(
+            f"{len(attack_scenarios)} scenario(s) predicted this run by chaining findings above — "
+            "**predictions only, nothing here was tested, attempted, or validated.** Full detail in "
+            "`attack-scenarios.md`."
+        )
+        lines.append("")
+        ranked_scenarios = sorted(
+            attack_scenarios,
+            key=lambda s: ({"high": 0, "medium": 1, "low": 2}.get(s["likelihood"], 3), -s["confidence"]),
+        )
+        for scenario in ranked_scenarios:
+            lines.append(
+                f"- **{scenario['title']}** — likelihood {scenario['likelihood']}, "
+                f"confidence {scenario['confidence']:.2f}, chains {len(scenario['chained_finding_ids'])} finding(s)"
+            )
+        lines.append("")
 
     lines += ["## Delta vs. previous run", ""]
     if previous_run_id is None:
@@ -250,6 +293,69 @@ def _render_compliance_view(findings: list[dict]) -> str:
         for tag in other_tags:
             count = sum(1 for f in findings if tag in (f.get("regulatory_tags") or []))
             lines.append(f"- **{tag}**: {count} finding(s)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_attack_scenarios(attack_scenarios: Optional[list[dict]], findings: list[dict]) -> str:
+    lines = [
+        "# Predicted Attack Scenarios (White-Hat Analysis)",
+        "",
+        "**Every scenario below is a PREDICTION, not a record of anything tested, attempted, or",
+        "validated.** An attack-scenario analyst (`.claude/agents/attack-scenario-analyst.md`, or the",
+        "labeled placeholder `analysts/mock/attack_scenario.py` proving this pipeline) reasons about how a",
+        "real attacker COULD chain findings this run already gathered — it never logs in, sends a payload,",
+        "or otherwise acts on a target. `schema/attack_scenario.schema.json` locks every scenario's",
+        "`status` to the single value `predicted` for exactly this reason: there is no schema-legal way to",
+        "mark one confirmed or exploited. See `THREAT-MODEL.md` for the full non-goals list this stage",
+        "holds to.",
+        "",
+    ]
+
+    if attack_scenarios is None:
+        lines.append("No attack-scenario analyst was wired into this run — this stage did not run.")
+        lines.append("")
+        return "\n".join(lines)
+
+    if not attack_scenarios:
+        lines.append(
+            "This stage ran; no scenario met the bar to report (fewer than two chainable findings this "
+            "run, or every candidate proposed was rejected for referencing a finding_id this run doesn't "
+            "actually have — see the run's event log for `attack_scenario`-rejection entries)."
+        )
+        lines.append("")
+        return "\n".join(lines)
+
+    findings_by_id = {f["finding_id"]: f for f in findings}
+    ranked = sorted(
+        attack_scenarios,
+        key=lambda s: ({"high": 0, "medium": 1, "low": 2}.get(s["likelihood"], 3), -s["confidence"]),
+    )
+    for scenario in ranked:
+        lines.append(f"## {scenario['title']}")
+        lines.append("")
+        lines.append(f"- **Attacker goal**: {scenario['attacker_goal']}")
+        lines.append(f"- **Likelihood**: {scenario['likelihood']}  ·  **Analyst confidence**: {scenario['confidence']:.2f}")
+        lines.append(f"- **Potential impact**: {scenario['potential_impact']}")
+        if scenario.get("mitre_attack_techniques"):
+            lines.append(f"- **ATT&CK techniques**: {', '.join(scenario['mitre_attack_techniques'])}")
+        lines.append("")
+        lines.append(scenario["narrative"])
+        lines.append("")
+        lines.append("**Predicted attack path:**")
+        lines.append("")
+        for step in sorted(scenario["attack_path"], key=lambda s: s["step"]):
+            grounded = findings_by_id.get(step["based_on_finding_id"]) if step["based_on_finding_id"] else None
+            grounding = f" (based on: {grounded['title']})" if grounded else ""
+            lines.append(f"{step['step']}. {step['description']}{grounding}")
+        lines.append("")
+        lines.append("**Chained findings:**")
+        lines.append("")
+        for fid in scenario["chained_finding_ids"]:
+            f = findings_by_id.get(fid)
+            if f:
+                lines.append(f"- **{f['title']}** (risk {f.get('risk_score', 'n/a')}) — `{f['domain']}` / `{f['asset']['asset_id']}`")
         lines.append("")
 
     return "\n".join(lines)

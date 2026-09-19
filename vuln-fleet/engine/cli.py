@@ -18,6 +18,7 @@ from typing import Optional
 import yaml
 
 from adapters import dns_recon
+from analysts.mock import attack_scenario as mock_attack_scenario
 from engine.domains import DOMAIN_REGISTRY, RED_TEAM_DOMAIN, build_domain_specs
 from engine.orchestrator import DomainSpec, Orchestrator
 from engine.scope import ScopeModel, ScopeViolation
@@ -118,6 +119,13 @@ def _run_sweep(run_id: str, previous_run_id: Optional[str], domains: Optional[li
         report_dir=REPORT_DIR,
         domain_budgets={d: max_concurrent for d in DOMAIN_REGISTRY},
         previous_run_id=previous_run_id,
+        # Runs once, after every domain above reports in -- see
+        # engine/attack_scenarios.py and analysts/mock/attack_scenario.py's
+        # own docstrings for why this is a labeled placeholder, not real
+        # analysis: predicting attacker behavior is a live agent's job
+        # (.claude/agents/attack-scenario-analyst.md), not deterministic
+        # code's.
+        attack_scenario_fn=mock_attack_scenario.synthesize,
     )
     specs = build_domain_specs(scope, domains=domains)
     return orchestrator.run(specs)

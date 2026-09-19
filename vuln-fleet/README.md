@@ -379,12 +379,73 @@ Build is proceeding per the staged build order. Completed so far:
     run's real entries as the first (and, as of this writing, only)
     records in each file.
 
+14. **Tier 0.5: `attack-scenario-analyst`, a white-hat attention-points
+    stage** — `.claude/agents/attack-scenario-analyst.md` defines a new
+    kind of agent in this fleet: one that never touches a target, live
+    or mock. The fleet orchestrator (`engine/orchestrator.py`'s
+    `_run_attack_scenario_analysis`) triggers it exactly once per run,
+    after every Tier 1 domain has reported in and findings are
+    deduplicated/correlated/risk-scored — never per-domain, never
+    per-target, because its whole value is seeing across domains a
+    single domain's own worker never would (a `red-team-recon`
+    subdomain finding chained with a `code-firstparty` hardcoded
+    credential and an `infra-network` permissive firewall rule is a
+    larger story than any one of the three alone tells). It reads the
+    run's full finding/issue set and predicts plausible attack scenarios
+    by chaining findings together — narrative prediction, for the report,
+    never anything tested or attempted.
+
+    That last part is enforced structurally, not just by convention.
+    `schema/attack_scenario.schema.json` locks every scenario's `status`
+    to the single allowed value `predicted` — there is no schema-legal
+    way to mark one "confirmed" or "exploited". The agent's own tool
+    grants (`Read, Grep, Glob` — no `Bash`, no `Write`/`Edit`) make this
+    a structural fact too: it cannot execute code or reach a network
+    from this role, so it *can't* attempt what it predicts even if
+    asked to. `engine/attack_scenarios.py`'s `finalize_scenarios()` adds
+    a second, independent guard: every `chained_finding_id` a scenario
+    references is checked against this run's real, deduplicated finding
+    set, and any scenario referencing one that doesn't exist is rejected
+    (logged, dropped) rather than silently kept — a hallucinated finding
+    reference is exactly the kind of unevidenced claim this project's
+    whole reporting discipline refuses to let through, whether it comes
+    from an adapter or an analyst.
+
+    Findings surface in the report suite as attention points, per the
+    request that started this: a new "Attention points: predicted attack
+    scenarios" section in `posture.md` (with a fixed, always-present
+    disclaimer, not an optional one a future careless edit could drop),
+    full detail in the new `reports/<run_id>/attack-scenarios.md`, and
+    an `attack_scenario` event type in the hash-chained log
+    (`schema/event.schema.json`) alongside `finding` events.
+
+    `analysts/mock/attack_scenario.py` is the CLI/test path's
+    placeholder (wired into `full-sweep`/`delta-sweep` by default via
+    `engine/cli.py`), and it's a different kind of mock than the
+    original nine domains': genuine attack-scenario prediction is
+    reasoning about context, not a fact retrievable from an API the way
+    `adapters/supply_chain.py` made OSV.dev lookups real, so there's no
+    "upgrade this mock to a real adapter" path here the way there was for
+    supply-chain/firmware-hardware/api-surface. The mock picks the run's
+    two highest-risk issues and produces exactly one clearly-labeled
+    `[MOCK ANALYSIS]` illustrative scenario (verified live: a real
+    `full-sweep` run correctly chained two real Dell iDRAC CVE findings
+    from `firmware-hardware` into one templated example, end to end
+    through the log, `posture.md`, and `attack-scenarios.md`) — proving
+    the pipeline, never standing in for genuine judgement. A live
+    Claude Code session running the real `attack-scenario-analyst` agent
+    is the only "real" version of this stage that will ever exist.
+
 Not built yet: real adapters for the remaining 6 Tier 1 domains — blocked
 on real credentialed infrastructure access this exercise doesn't have,
 not on more engineering effort. `red-team-recon` is complete for the
 scope described above; extending it (more passive signal sources, more
 benign active checks) is additional engineering effort, not blocked on
-anything this exercise lacks.
+anything this exercise lacks. `attack-scenario-analyst` is complete as a
+pipeline (schema, integrity checks, orchestrator wiring, reporting) and
+as an agent definition; running it for real requires a live Claude Code
+session (not this repo's own test/CLI path), same as every other
+`.claude/agents/*.md` definition in this fleet.
 
 ## Running the tests
 

@@ -361,3 +361,146 @@ def test_kill_flag_written_mid_run_stops_remaining_targets_and_domains(tmp_path)
 
     posture_text = Path(result["report_paths"]["posture_md"]).read_text()
     assert "kill_switch" in posture_text
+
+
+# -- attack-scenario analysis (Tier 0.5) -----------------------------------------
+
+
+def test_attack_scenario_analysis_disabled_by_default(tmp_path):
+    """No attack_scenario_fn passed in -> the stage never runs: no
+    attack_scenario events, attack_scenarios is None (not []) in the
+    result, and no scenario-analysis agent is spawned."""
+    result = _run(tmp_path)
+
+    assert result["attack_scenarios"] is None
+    events = _log_events(tmp_path)
+    assert not any(e["event_type"] == "attack_scenario" for e in events)
+    assert not any(e.get("agent_role") == "attack-scenario-analyst" for e in events)
+
+
+def test_attack_scenario_fn_wired_produces_scenario_and_event(tmp_path):
+    def stub_analyst(findings, issues):
+        ids = [f["finding_id"] for f in findings[:2]]
+        return [
+            {
+                "title": "Stub chain",
+                "attacker_goal": "Test the wiring",
+                "narrative": "An attacker would chain these two findings.",
+                "attack_path": [{"step": 1, "description": "Step one", "based_on_finding_id": ids[0]}],
+                "chained_finding_ids": ids,
+                "likelihood": "medium",
+                "confidence": 0.5,
+                "potential_impact": "None -- this is a test.",
+                "mitre_attack_techniques": [],
+                "evidence_ref": [],
+            }
+        ]
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3}, attack_scenario_fn=stub_analyst,
+    )
+    result = orchestrator.run(_domain_specs())
+
+    assert len(result["attack_scenarios"]) == 1
+    scenario = result["attack_scenarios"][0]
+    assert scenario["title"] == "Stub chain"
+    assert scenario["status"] == "predicted"
+    assert scenario["run_id"] == "e2e-run"
+
+    events = _log_events(tmp_path)
+    scenario_events = [e for e in events if e["event_type"] == "attack_scenario"]
+    assert len(scenario_events) == 1
+    assert scenario_events[0]["details"]["scenario_id"] == scenario["scenario_id"]
+    assert scenario_events[0]["agent_role"] == "attack-scenario-analyst"
+
+    attack_scenarios_text = Path(result["report_paths"]["attack_scenarios_md"]).read_text()
+    assert "Stub chain" in attack_scenarios_text
+
+
+def test_attack_scenario_fn_returning_bad_finding_id_is_rejected_not_crashed(tmp_path):
+    def hallucinating_analyst(findings, issues):
+        return [
+            {
+                "title": "Hallucinated chain",
+                "attacker_goal": "x",
+                "narrative": "x",
+                "attack_path": [],
+                "chained_finding_ids": ["not-a-real-finding-id", "also-not-real"],
+                "likelihood": "low",
+                "confidence": 0.1,
+                "potential_impact": "x",
+                "mitre_attack_techniques": [],
+                "evidence_ref": [],
+            }
+        ]
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3}, attack_scenario_fn=hallucinating_analyst,
+    )
+    result = orchestrator.run(_domain_specs())
+
+    assert result["attack_scenarios"] == []  # rejected, not accepted
+    events = _log_events(tmp_path)
+    assert not any(e["event_type"] == "attack_scenario" for e in events)
+    rejection_events = [e for e in events if e["event_type"] == "agent_error" and "rejected" in e["message"]]
+    assert len(rejection_events) == 1
+    assert "not-a-real-finding-id" in rejection_events[0]["message"]
+
+
+def test_attack_scenario_fn_raising_does_not_crash_the_run(tmp_path):
+    def broken_analyst(findings, issues):
+        raise RuntimeError("analyst blew up")
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3}, attack_scenario_fn=broken_analyst,
+    )
+    result = orchestrator.run(_domain_specs())  # must not raise
+
+    assert result["attack_scenarios"] == []
+    events = _log_events(tmp_path)
+    assert any(e["event_type"] == "run_complete" for e in events)  # run still finished
+
+
+def test_attack_scenario_analysis_skipped_when_kill_switch_already_active(tmp_path):
+    """Reproduces a real bug caught by the full suite: spawning the
+    analysis agent after a kill switch trip raised SpawnRefused instead
+    of being skipped like any other new activity a killed run refuses."""
+    def never_called_analyst(findings, issues):
+        raise AssertionError("should never be called once the kill switch has tripped")
+
+    kill_flag = tmp_path / "reports" / "e2e-run.kill"
+
+    def killing_adapter(target_ref, resolution):
+        kill_flag.parent.mkdir(parents=True, exist_ok=True)
+        kill_flag.write_text("kill requested mid-run")
+        return supply_chain.scan(target_ref, resolution)
+
+    specs = [
+        DomainSpec(domain="supply-chain", worker_role="repo-worker", targets=["repo:stibo/checkout"], adapter_fn=killing_adapter),
+    ]
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3}, attack_scenario_fn=never_called_analyst,
+    )
+
+    result = orchestrator.run(specs)  # must not raise
+
+    assert result["attack_scenarios"] == []
+
+
+def test_attack_scenario_analysis_skipped_with_no_findings(tmp_path):
+    def never_called_analyst(findings, issues):
+        raise AssertionError("should never be called when there are no findings")
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3}, attack_scenario_fn=never_called_analyst,
+    )
+    empty_spec = [DomainSpec(domain="supply-chain", worker_role="repo-worker", targets=[], adapter_fn=lambda t, r: [])]
+
+    result = orchestrator.run(empty_spec)
+
+    assert result["attack_scenarios"] == []
