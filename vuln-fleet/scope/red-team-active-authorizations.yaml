@@ -9,3 +9,13 @@ authorizations:
   valid_from: '2026-09-19T05:38:21Z'
   valid_until: '2026-09-20T05:38:21Z'
   signature: SELF-ATTESTED
+- authorization_ref: red-team-stibo.com-20260919T092527Z
+  scope:
+  - domain:stibo.com
+  actions:
+  - external_recon_active
+  approved_by: jepm@stibo.com
+  signed_at: '2026-09-19T09:25:27Z'
+  valid_from: '2026-09-19T09:25:27Z'
+  valid_until: '2026-09-20T09:25:27Z'
+  signature: SELF-ATTESTED
