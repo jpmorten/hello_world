@@ -133,6 +133,40 @@ This writes `reports/<run_id>.kill` — a flag file, not a process signal. The r
 
 A `.kill` flag is scoped to its own `run_id` (which includes a timestamp), so it never needs manual cleanup before a later run — a new run gets a new run_id and a fresh, absent flag.
 
+## Governance: Warden, PolicyCop, CostCop, Ethica
+
+Every run compiles a `GovernanceReport` (`reports/<run_id>/governance.md`, plus a summary in `posture.md`) covering the fleet's own conduct and cost this run — never a target's risk, that's what findings/issues already are. It always runs; no live agent needs to be wired in for a real result, because the checks underneath are deterministic code (`engine/policy_checks.py`, `engine/token_budget.py`, `engine/ethics_checks.py`), the same way scope decisions are.
+
+- **PolicyCop** checks the fleet's own EU AI Act / CRA / NIS2 / GDPR conduct (tool-grant discipline, finding-schema transparency fields, mock-output disclosure, authorization hygiene, no hardcoded secrets in tracked config).
+- **CostCop** checks real token spend against `scope/token-budget.yaml`'s declared budget, alerting once less than the configured `alert_threshold_pct` (20% by default) remains.
+- **Ethica** checks the run's own findings/scenarios/event log for anything that would mean an agent stopped acting like a white hat — every check here should structurally never fire; an empty flags list is the expected, healthy result.
+- **Warden** combines all three into one verdict (`clear` / `warning` / `critical`) and is the only role with kill-switch authority.
+
+### Recording real token spend
+
+Only a live Claude Code session actually knows its own token cost — this repo's own deterministic engine/adapter code makes no model calls. After a sweep you drove, record it:
+
+```bash
+python3 -m engine.cli record-usage <run_id> <tokens>
+```
+
+This appends to `scope/token-usage-ledger.yaml` (never overwritten, never hand-edited) and prints the resulting budget status. A run nobody calls this for stays honestly reported as "not measured" — never defaulted to zero or guessed. Check the current status any time with:
+
+```bash
+python3 -m engine.cli governance-status
+```
+
+### The fleet-wide halt (Warden's kill switch)
+
+Distinct from the per-run `.kill` flag above (which stops one in-flight run): a `critical` governance verdict makes the orchestrator write `reports/FLEET_HALT.flag`, checked at the very start of every `Orchestrator.run()` call. While it's present, **no** `full-sweep`, `delta-sweep`, `target`, or `red-team-recon` invocation will start — each refuses immediately with the halt's recorded reason, before creating any log or report for the attempted run.
+
+```bash
+python3 -m engine.cli halt --reason "..."     # Warden's own manual escalation path (rare -- see warden.md)
+python3 -m engine.cli resume                  # clears the halt
+```
+
+**`resume` is a human-operator action only.** No agent in this fleet — Warden included — is documented or expected to run it on its own; `.claude/agents/warden.md` says so explicitly, and nothing in `engine/governance.py` calls `clear_fleet_halt` from any automated or agent-driven path. If you see `FLEET_HALT.flag` present, read `governance.md` for the run that triggered it (the flag's own `report_ref` names it) before clearing it — the point of this mechanism is that a human looks before the fleet runs again, not that it clears itself.
+
 ## Predicted attack scenarios
 
 `reports/<run_id>/attack-scenarios.md` and a summary section in `posture.md` ("Attention points: predicted attack scenarios") list every scenario the attack-scenario-analyst stage predicted this run by chaining two or more findings together — e.g. a subdomain exposure plus a hardcoded credential plus a permissive firewall rule chaining into something worse than any one of them alone.

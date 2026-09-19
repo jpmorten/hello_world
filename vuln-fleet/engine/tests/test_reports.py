@@ -59,7 +59,7 @@ def test_severity_band_thresholds(score, expected_band, expected_sla):
 # -- write_reports: file set ----------------------------------------------------
 
 
-def test_write_reports_creates_all_seven_files(tmp_path):
+def test_write_reports_creates_all_eight_files(tmp_path):
     findings = [_finding()]
     issues = [_issue()]
     rollups = {"supply-chain": _FakeRollup(targets_attempted=["repo:stibo/checkout"], findings=findings)}
@@ -69,7 +69,7 @@ def test_write_reports_creates_all_seven_files(tmp_path):
 
     assert set(paths) == {
         "findings_json", "issues_json", "posture_md", "by_domain_md",
-        "remediation_board_md", "compliance_view_md", "attack_scenarios_md",
+        "remediation_board_md", "compliance_view_md", "attack_scenarios_md", "governance_md",
     }
     for path_str in paths.values():
         assert Path(path_str).exists()

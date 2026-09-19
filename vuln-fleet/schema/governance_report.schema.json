@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vuln-fleet.stibo.internal/schema/governance_report.schema.json",
+  "title": "GovernanceReport",
+  "description": "Tier G (governance) oversight verdict for one run, compiled once after every Tier 1 domain and the Tier 0.5 attack-scenario-analyst have reported in. Combines PolicyCop's EU regulatory/legislative compliance findings (engine/policy_checks.py), CostCop's token-budget status (engine/token_budget.py), and Ethica's non-exploitation/guardrail flags (engine/ethics_checks.py) into Warden's single verdict (engine/governance.py). This is never a judgement about a TARGET's risk -- that's what findings/issues already are -- it's a judgement about the FLEET'S OWN conduct and cost this run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_id",
+    "run_id",
+    "generated_at",
+    "policy",
+    "cost",
+    "ethics",
+    "verdict",
+    "kill_switch_engaged",
+    "escalation_reason"
+  ],
+  "properties": {
+    "report_id": {
+      "type": "string",
+      "description": "Deterministic fingerprint: sha256(run_id, generated_at). Computed by engine/governance.py, never asserted.",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["regulations_checked", "violations"],
+      "description": "PolicyCop's regulatory/legislative compliance pass.",
+      "properties": {
+        "regulations_checked": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["NIS2", "CRA", "EU_AI_Act", "GDPR", "ISO27001", "SOC2"] }
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rule", "regulation", "severity", "description", "evidence_ref"],
+            "properties": {
+              "rule": { "type": "string", "minLength": 1 },
+              "regulation": { "type": "string", "enum": ["NIS2", "CRA", "EU_AI_Act", "GDPR", "ISO27001", "SOC2"] },
+              "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+              "description": { "type": "string", "minLength": 1 },
+              "evidence_ref": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measured",
+        "budget_tokens",
+        "spent_tokens",
+        "remaining_tokens",
+        "remaining_pct",
+        "alert_threshold_pct",
+        "alert"
+      ],
+      "description": "CostCop's token-budget status -- real arithmetic over scope/token-usage-ledger.yaml, never an estimate.",
+      "properties": {
+        "measured": {
+          "type": "boolean",
+          "description": "False when no live session has ever reported real usage via `engine.cli record-usage` -- CostCop never fabricates a spend number, and a never-measured run reports honestly as such rather than defaulting to 0."
+        },
+        "budget_tokens": { "type": "integer", "minimum": 1 },
+        "spent_tokens": { "type": "integer", "minimum": 0 },
+        "remaining_tokens": { "type": "integer", "minimum": 0 },
+        "remaining_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "alert_threshold_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "alert": { "type": "boolean", "description": "True once remaining_pct has dropped below alert_threshold_pct." }
+      }
+    },
+    "ethics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guardrails_checked", "flags"],
+      "description": "Ethica's non-exploitation/guardrail pass over this run's own findings, attack scenarios, and event log.",
+      "properties": {
+        "guardrails_checked": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["guardrail", "severity", "description", "evidence_ref"],
+            "properties": {
+              "guardrail": { "type": "string", "minLength": 1 },
+              "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+              "description": { "type": "string", "minLength": 1 },
+              "evidence_ref": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["clear", "warning", "critical"],
+      "description": "Warden's aggregate verdict: critical if any policy violation or ethics flag is severity=critical; warning if any is severity=warning or CostCop's cost.alert is true; clear otherwise."
+    },
+    "kill_switch_engaged": {
+      "type": "boolean",
+      "description": "True exactly when verdict=critical. The orchestrator responds by triggering this run's kill switch (a record, since governance runs after everything else this run does) AND writing a fleet-wide halt flag that refuses every future run until a human runs `engine.cli resume` -- see engine/governance.py."
+    },
+    "escalation_reason": {
+      "type": ["string", "null"],
+      "description": "Human-readable summary of the violation(s)/flag(s)/cost-alert driving a non-clear verdict. Null when verdict=clear."
+    }
+  }
+}

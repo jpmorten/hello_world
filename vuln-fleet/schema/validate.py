@@ -23,10 +23,12 @@ def _load_schema(name: str) -> dict[str, Any]:
 FINDING_SCHEMA = _load_schema("finding.schema.json")
 EVENT_SCHEMA = _load_schema("event.schema.json")
 ATTACK_SCENARIO_SCHEMA = _load_schema("attack_scenario.schema.json")
+GOVERNANCE_REPORT_SCHEMA = _load_schema("governance_report.schema.json")
 
 _finding_validator = Draft202012Validator(FINDING_SCHEMA)
 _event_validator = Draft202012Validator(EVENT_SCHEMA)
 _attack_scenario_validator = Draft202012Validator(ATTACK_SCENARIO_SCHEMA)
+_governance_report_validator = Draft202012Validator(GOVERNANCE_REPORT_SCHEMA)
 
 
 class SchemaValidationError(Exception):
@@ -55,6 +57,15 @@ def validate_attack_scenario(scenario: dict[str, Any]) -> None:
         raise SchemaValidationError(errors)
 
 
+def validate_governance_report(report: dict[str, Any]) -> None:
+    errors = sorted(
+        f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
+        for e in _governance_report_validator.iter_errors(report)
+    )
+    if errors:
+        raise SchemaValidationError(errors)
+
+
 def validate_event(event: dict[str, Any]) -> None:
     errors = sorted(
         f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
@@ -72,3 +83,8 @@ def validate_event(event: dict[str, Any]) -> None:
         if details is None:
             raise SchemaValidationError(["details: required when event_type=attack_scenario"])
         validate_attack_scenario(details)
+    if event["event_type"] == "governance_report":
+        details = event.get("details")
+        if details is None:
+            raise SchemaValidationError(["details: required when event_type=governance_report"])
+        validate_governance_report(details)

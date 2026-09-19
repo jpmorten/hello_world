@@ -1,4 +1,4 @@
-"""python3 -m engine.cli <full-sweep|delta-sweep|target|red-team-recon|kill> ...
+"""python3 -m engine.cli <full-sweep|delta-sweep|target|red-team-recon|kill|halt|resume|record-usage|governance-status> ...
 
 The real entry point behind the `.claude/commands/*.md` slash commands
 and what RUNBOOK.md tells Security Ops to run directly when there's no
@@ -19,6 +19,7 @@ import yaml
 
 from adapters import dns_recon
 from analysts.mock import attack_scenario as mock_attack_scenario
+from engine import governance, token_budget
 from engine.domains import DOMAIN_REGISTRY, RED_TEAM_DOMAIN, build_domain_specs
 from engine.orchestrator import DomainSpec, Orchestrator
 from engine.scope import ScopeModel, ScopeViolation
@@ -32,6 +33,8 @@ DEFAULT_DOMAIN_BUDGET = 5
 
 RED_TEAM_TARGETS_PATH = SCOPE_DIR / "red-team-targets.yaml"
 RED_TEAM_AUTH_PATH = SCOPE_DIR / "red-team-active-authorizations.yaml"
+TOKEN_BUDGET_PATH = SCOPE_DIR / "token-budget.yaml"
+TOKEN_LEDGER_PATH = SCOPE_DIR / "token-usage-ledger.yaml"
 _ACTIVE_AUTHORIZATION_ACTION = "external_recon_active"
 _ACTIVE_AUTHORIZATION_WINDOW = timedelta(hours=24)
 # RFC 1035-ish: labels of 1-63 chars, no leading/trailing hyphen, at least
@@ -128,12 +131,33 @@ def _print_summary(run_id: str, result: dict) -> None:
         for domain, targets_failed in gaps.items():
             for target, reason in targets_failed.items():
                 print(f"  [{domain}] {target}: {reason}")
+    governance_report = result.get("governance_report")
+    if governance_report:
+        verdict = governance_report["verdict"]
+        print(f"Governance (Warden): {verdict}" + (f" — {governance_report['escalation_reason']}" if governance_report["escalation_reason"] else ""))
+        if governance_report["kill_switch_engaged"]:
+            print("  🔴 Fleet halted — run `python3 -m engine.cli resume` after review to allow further runs.", file=sys.stderr)
     print("Reports:")
     for name, path in result["report_paths"].items():
         print(f"  {name}: {path}")
 
 
-def _run_sweep(run_id: str, previous_run_id: Optional[str], domains: Optional[list[str]], max_concurrent: int) -> dict:
+def _print_fleet_halted(halted: governance.FleetHalted) -> None:
+    record = halted.halt_record
+    print("Refused: the fleet is halted by a prior critical governance verdict.", file=sys.stderr)
+    print(f"  halted_at: {record.get('halted_at', '?')}", file=sys.stderr)
+    print(f"  reason: {record.get('reason', '?')}", file=sys.stderr)
+    print(f"  report_ref: {record.get('report_ref', '?')}", file=sys.stderr)
+    print("A human operator must review this and run `python3 -m engine.cli resume` before any further run.", file=sys.stderr)
+
+
+def _run_sweep(
+    run_id: str,
+    previous_run_id: Optional[str],
+    domains: Optional[list[str]],
+    max_concurrent: int,
+    tokens_used: Optional[int] = None,
+) -> dict:
     # _merged_scope_model (not the Stibo-only _scope_model) so a red-team
     # target below resolves against the same ScopeModel the Tier 1
     # domains do -- one run, one scope resolution, one report.
@@ -186,12 +210,19 @@ def _run_sweep(run_id: str, previous_run_id: Optional[str], domains: Optional[li
         # code's.
         attack_scenario_fn=mock_attack_scenario.synthesize,
     )
-    return orchestrator.run(specs)
+    return orchestrator.run(specs, tokens_used=tokens_used)
 
 
 def cmd_full_sweep(args: argparse.Namespace) -> int:
     run_id = args.run_id or _new_run_id("full-sweep")
-    result = _run_sweep(run_id, args.previous_run_id, domains=None, max_concurrent=args.max_concurrent_per_domain)
+    try:
+        result = _run_sweep(
+            run_id, args.previous_run_id, domains=None, max_concurrent=args.max_concurrent_per_domain,
+            tokens_used=args.tokens_used,
+        )
+    except governance.FleetHalted as halted:
+        _print_fleet_halted(halted)
+        return 1
     _print_summary(run_id, result)
     return 0
 
@@ -201,7 +232,14 @@ def cmd_delta_sweep(args: argparse.Namespace) -> int:
     previous_run_id = args.previous_run_id or _latest_completed_run_id()
     if previous_run_id is None:
         print("No previous completed run found — this delta-sweep will report everything as new.", file=sys.stderr)
-    result = _run_sweep(run_id, previous_run_id, domains=None, max_concurrent=args.max_concurrent_per_domain)
+    try:
+        result = _run_sweep(
+            run_id, previous_run_id, domains=None, max_concurrent=args.max_concurrent_per_domain,
+            tokens_used=args.tokens_used,
+        )
+    except governance.FleetHalted as halted:
+        _print_fleet_halted(halted)
+        return 1
     _print_summary(run_id, result)
     return 0
 
@@ -244,7 +282,11 @@ def cmd_target(args: argparse.Namespace) -> int:
         )
         for domain in matching_domains
     ]
-    result = orchestrator.run(specs)
+    try:
+        result = orchestrator.run(specs, tokens_used=args.tokens_used)
+    except governance.FleetHalted as halted:
+        _print_fleet_halted(halted)
+        return 1
     _print_summary(run_id, result)
     return 0
 
@@ -351,7 +393,11 @@ def cmd_red_team_recon(args: argparse.Namespace) -> int:
         targets=[target_ref],
         adapter_fn=RED_TEAM_DOMAIN.adapter_fn,
     )
-    result = orchestrator.run([spec])
+    try:
+        result = orchestrator.run([spec], tokens_used=args.tokens_used)
+    except governance.FleetHalted as halted:
+        _print_fleet_halted(halted)
+        return 1
     _print_summary(run_id, result)
     return 0
 
@@ -369,6 +415,64 @@ def cmd_kill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _halt_flag_path() -> Path:
+    return REPORT_DIR / "FLEET_HALT.flag"
+
+
+def cmd_halt(args: argparse.Namespace) -> int:
+    path = governance.trigger_fleet_halt(args.reason, args.report_ref, _halt_flag_path())
+    print(f"Fleet-wide halt flag written: {path}")
+    print("No full-sweep/delta-sweep/target/red-team-recon run will start until `resume` is run.")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    cleared = governance.clear_fleet_halt(_halt_flag_path())
+    if cleared:
+        print("Fleet-wide halt cleared. Runs may proceed again.")
+    else:
+        print("No fleet-wide halt was in effect.")
+    return 0
+
+
+def cmd_record_usage(args: argparse.Namespace) -> int:
+    budget = token_budget.TokenBudget.load(TOKEN_BUDGET_PATH)
+    recorded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entries = token_budget.record_usage(args.run_id, args.tokens, recorded_at, TOKEN_LEDGER_PATH)
+    status = token_budget.status(budget, entries)
+    print(f"Recorded {args.tokens} token(s) for run {args.run_id!r}.")
+    print(
+        f"Budget status: {status['spent_tokens']}/{status['budget_tokens']} spent "
+        f"({status['remaining_pct']}% remaining, alert threshold {status['alert_threshold_pct']}%)."
+    )
+    if status["alert"]:
+        print("⚠️  CostCop alert: remaining budget is below the alert threshold.", file=sys.stderr)
+    return 0
+
+
+def cmd_governance_status(args: argparse.Namespace) -> int:
+    budget = token_budget.TokenBudget.load(TOKEN_BUDGET_PATH)
+    entries = token_budget.load_ledger(TOKEN_LEDGER_PATH)
+    status = token_budget.status(budget, entries)
+    print("CostCop — token budget:")
+    if not status["measured"]:
+        print(f"  Not measured yet (budget on file: {status['budget_tokens']} tokens).")
+    else:
+        print(
+            f"  {status['spent_tokens']}/{status['budget_tokens']} tokens spent "
+            f"({status['remaining_pct']}% remaining, alert threshold {status['alert_threshold_pct']}%)"
+            + (" — ALERT" if status["alert"] else "")
+        )
+
+    halt_record = governance.fleet_halt_status(_halt_flag_path())
+    print("Warden — fleet status:")
+    if halt_record is None:
+        print("  Not halted.")
+    else:
+        print(f"  HALTED at {halt_record.get('halted_at', '?')}: {halt_record.get('reason', '?')}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python3 -m engine.cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -377,6 +481,17 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--run-id", help="Defaults to an auto-generated timestamped id.")
         sub.add_argument("--previous-run-id", help="Baseline to diff against for the new/recurring/resolved/regressed delta.")
         sub.add_argument("--max-concurrent-per-domain", type=int, default=DEFAULT_DOMAIN_BUDGET)
+        sub.add_argument(
+            "--tokens-used",
+            type=int,
+            default=None,
+            help=(
+                "Real token cost of this run, if you know it (only a live Claude Code session actually "
+                "does — this CLI's own deterministic code makes no model calls). Recorded to CostCop's "
+                "ledger (scope/token-usage-ledger.yaml) before Warden's governance verdict is computed. "
+                "Omit it and CostCop honestly reports the run as 'not measured' rather than guessing."
+            ),
+        )
 
     full_sweep = subparsers.add_parser("full-sweep", help="Sweep every registered domain.")
     add_common_sweep_args(full_sweep)
@@ -392,6 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("target_ref", help="e.g. repo:stibo/checkout or endpoint:https://cms-edge.example-stibodx.com")
     target.add_argument("--run-id")
     target.add_argument("--previous-run-id")
+    target.add_argument("--tokens-used", type=int, default=None)
     target.set_defaults(func=cmd_target)
 
     red_team_recon = subparsers.add_parser(
@@ -417,11 +533,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     red_team_recon.add_argument("--run-id")
     red_team_recon.add_argument("--previous-run-id")
+    red_team_recon.add_argument("--tokens-used", type=int, default=None)
     red_team_recon.set_defaults(func=cmd_red_team_recon)
 
     kill = subparsers.add_parser("kill", help="Write a kill flag for a run (defaults to the most recently active one).")
     kill.add_argument("--run-id", help="Defaults to the most recently written-to run log.")
     kill.set_defaults(func=cmd_kill)
+
+    halt = subparsers.add_parser(
+        "halt",
+        help=(
+            "Warden's fleet-wide kill switch: refuses every future full-sweep/delta-sweep/target/"
+            "red-team-recon run until a human runs `resume`. Distinct from `kill` (which stops one "
+            "in-flight run) -- this stops the fleet from starting a NEW one at all."
+        ),
+    )
+    halt.add_argument("--reason", required=True, help="Why the fleet is being halted -- recorded in the halt flag.")
+    halt.add_argument("--report-ref", default="manual", help="A governance report id this halt relates to, if any.")
+    halt.set_defaults(func=cmd_halt)
+
+    resume = subparsers.add_parser(
+        "resume",
+        help=(
+            "Clears a fleet-wide halt (Warden's kill switch or a manual `halt`). Intended for a human "
+            "operator only, after reviewing why the halt was triggered -- see RUNBOOK.md. No agent in this "
+            "fleet is documented or expected to run this on its own."
+        ),
+    )
+    resume.set_defaults(func=cmd_resume)
+
+    record_usage = subparsers.add_parser(
+        "record-usage",
+        help="CostCop: record a run's real token spend and print the resulting budget status.",
+    )
+    record_usage.add_argument("run_id")
+    record_usage.add_argument("tokens", type=int)
+    record_usage.set_defaults(func=cmd_record_usage)
+
+    governance_status = subparsers.add_parser(
+        "governance-status", help="Print CostCop's current token-budget status and Warden's halt status."
+    )
+    governance_status.set_defaults(func=cmd_governance_status)
 
     return parser
 

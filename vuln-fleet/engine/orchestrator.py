@@ -15,12 +15,13 @@ extensible" requirement for Tier 1 agents.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from engine import baseline, reports
+from engine import baseline, governance, reports
 from engine.attack_scenarios import AnalystFn, finalize_scenarios
 from engine.dedupe import compute_finding_id, correlate_findings, dedupe_findings
 from engine.logbus import LogBus, Sink
@@ -30,6 +31,15 @@ from engine.spawn import SpawnManager, SpawnRefused
 from schema.validate import validate_attack_scenario, validate_finding
 
 AdapterFn = Callable[[str, ScopeResolution], list[dict]]
+
+# vuln-fleet/ -- this file lives at vuln-fleet/engine/orchestrator.py.
+# Tier G's PolicyCop/Ethica checks (engine/policy_checks.py,
+# engine/ethics_checks.py) inspect the fleet's own real, current repo
+# state (.claude/agents/, schema/, analysts/mock/, scope/) -- not
+# anything scoped to a particular run's report_dir/log_dir, which tests
+# point at tmp_path -- so every run's governance review looks at the
+# same real tree a live operator would.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass(frozen=True)
@@ -78,6 +88,11 @@ class Orchestrator:
         # an already-running orchestrator.run() call -- there's no other
         # IPC between them.
         self.kill_flag_path = Path(kill_flag_path) if kill_flag_path else self.reports_root / f"{run_id}.kill"
+        # Fleet-wide, not per-run (unlike kill_flag_path above): Warden's
+        # critical-verdict halt refuses every FUTURE run against this same
+        # reports_root, not just this one -- see engine/governance.py and
+        # engine/cli.py's halt/resume subcommands.
+        self.halt_flag_path = self.reports_root / "FLEET_HALT.flag"
         self._now = now_fn
         self.logbus = LogBus(run_id, log_dir=log_dir, sinks=sinks or [])
         self.spawn_manager = SpawnManager(
@@ -123,7 +138,15 @@ class Orchestrator:
             targets_failed={t: reason for t in spec.targets},
         )
 
-    def run(self, domain_specs: list[DomainSpec]) -> dict:
+    def run(self, domain_specs: list[DomainSpec], tokens_used: Optional[int] = None) -> dict:
+        # Checked before this run's own log even exists: a fleet-wide halt
+        # (Warden's response to a prior run's critical governance verdict)
+        # refuses to start a new run at all, rather than starting one and
+        # immediately killing it -- there is nothing this run could
+        # legitimately do while a human hasn't yet reviewed why it was
+        # halted. See engine/governance.py's module docstring.
+        governance.raise_if_halted(self.halt_flag_path)
+
         self._emit_root_event(
             "run_start", "info", f"Run {self.run_id} starting.", details={"domains": [d.domain for d in domain_specs]}
         )
@@ -147,8 +170,17 @@ class Orchestrator:
         deduped, delta = baseline.compute_and_apply_delta(deduped, self.reports_root, self.previous_run_id)
         issues = correlate_findings(deduped)
         scenarios = self._run_attack_scenario_analysis(deduped, issues)
+        governance_report = self._run_governance_review(deduped, scenarios, tokens_used)
         report_paths = reports.write_reports(
-            self.report_dir, self.run_id, deduped, issues, self.rollups, delta, self.previous_run_id, scenarios
+            self.report_dir,
+            self.run_id,
+            deduped,
+            issues,
+            self.rollups,
+            delta,
+            self.previous_run_id,
+            scenarios,
+            governance_report,
         )
 
         self._emit_root_event(
@@ -164,6 +196,7 @@ class Orchestrator:
             "delta": delta,
             "report_paths": report_paths,
             "attack_scenarios": scenarios,
+            "governance_report": governance_report,
         }
 
     def _run_attack_scenario_analysis(self, findings: list[dict], issues: list[dict]) -> Optional[list[dict]]:
@@ -226,6 +259,80 @@ class Orchestrator:
             handle.agent_id, message=f"{len(scenarios)} predicted scenario(s), {len(rejections)} rejected."
         )
         return scenarios
+
+    def _read_run_events(self) -> list[dict]:
+        """Reads back this run's own persisted hash-chained log --
+        Ethica's checks (engine/ethics_checks.py) cross-reference the
+        run's real event stream, not an in-memory copy LogBus doesn't
+        keep. Safe to call here: every event this run will ever emit
+        before governance review runs has already been flushed to disk."""
+        if not self.logbus.log_path.exists():
+            return []
+        with open(self.logbus.log_path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def _run_governance_review(
+        self, findings: list[dict], scenarios: Optional[list[dict]], tokens_used: Optional[int]
+    ) -> dict:
+        """Tier G: Warden's aggregate review, compiled once per run after
+        everything else this run does -- see engine/governance.py's
+        module docstring for why this always runs (no live-agent
+        dependency, unlike attack-scenario analysis) and what a critical
+        verdict actually does. A live Warden/PolicyCop/CostCop/Ethica
+        session narrates and prioritizes this report; it never
+        recomputes the numbers in it.
+        """
+        report = governance.compile_governance_report(
+            run_id=self.run_id,
+            repo_root=_REPO_ROOT,
+            findings=findings,
+            scenarios=scenarios,
+            events=self._read_run_events(),
+            tokens_used=tokens_used,
+            now_fn=self._now,
+        )
+
+        # A prior domain in this same run may already have tripped the
+        # per-run kill switch (the OLD, unrelated `<run_id>.kill` flag
+        # mechanism) -- spawn() refuses every new spawn once that's
+        # true, exactly like it does for a Tier 1 domain (see run()'s own
+        # kill_switch check). Governance review still runs and is still
+        # logged either way; it just logs as a tier-0 orchestrator event
+        # instead of a spawned "warden" agent when a new spawn isn't
+        # possible, the same distinction _emit_root_event vs.
+        # emit_event_for already draws elsewhere in this file.
+        handle = None
+        if not self.spawn_manager.kill_switch_active:
+            handle = self.spawn_manager.spawn(domain="fleet-governance", agent_role="warden")
+
+        def _emit(event_type: str, severity: str, message: str) -> None:
+            if handle is not None:
+                self.spawn_manager.emit_event_for(handle, event_type, severity, message, details=report)
+            else:
+                self._emit_root_event(event_type, severity, message, details=report)
+
+        severity = {"clear": "info", "warning": "warning", "critical": "critical"}[report["verdict"]]
+        _emit(
+            "governance_report",
+            severity,
+            f"Governance verdict: {report['verdict']} "
+            f"({len(report['policy']['violations'])} policy violation(s), "
+            f"{len(report['ethics']['flags'])} ethics flag(s), "
+            f"cost alert={report['cost']['alert']}).",
+        )
+
+        if report["kill_switch_engaged"]:
+            reason = report["escalation_reason"] or "critical governance verdict"
+            _emit("escalation", "critical", f"\U0001f6a8 GOVERNANCE ALERT — Warden escalating: {reason}")
+            # Idempotent and, at this point in run(), a record rather than
+            # an in-flight stop (nothing is left running this late) --
+            # the flag file below is what actually stops the NEXT run.
+            self.spawn_manager.trigger_kill_switch(f"governance: {reason}")
+            governance.trigger_fleet_halt(reason, report["report_id"], self.halt_flag_path, now_fn=self._now)
+
+        if handle is not None:
+            self.spawn_manager.complete(handle.agent_id, message=f"Governance verdict: {report['verdict']}.")
+        return report
 
     def _run_domain(self, spec: DomainSpec) -> DomainRollup:
         domain_handle = self.spawn_manager.spawn(domain=spec.domain, agent_role=spec.domain)

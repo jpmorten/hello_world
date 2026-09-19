@@ -62,11 +62,16 @@ def write_reports(
     delta: dict,
     previous_run_id: Optional[str],
     attack_scenarios: Optional[list[dict]] = None,
+    governance_report: Optional[dict] = None,
 ) -> dict[str, str]:
     # None means the analysis stage never ran this run (no analyst wired
     # in); [] means it ran and kept nothing. Both flow through to the
     # renderers below, which say which one happened -- never collapsed
-    # together here.
+    # together here. governance_report is only None for a caller that
+    # bypasses Orchestrator.run() entirely (e.g. calling write_reports
+    # directly against synthetic data in a test) -- every real run
+    # always has one, since engine/governance.py's checks need no live
+    # agent to produce a real result.
     report_dir.mkdir(parents=True, exist_ok=True)
 
     findings_path = report_dir / "findings.json"
@@ -76,7 +81,9 @@ def write_reports(
     issues_path.write_text(json.dumps(issues, indent=2, sort_keys=True))
 
     posture_path = report_dir / "posture.md"
-    posture_path.write_text(_render_posture(run_id, findings, issues, rollups, delta, previous_run_id, attack_scenarios))
+    posture_path.write_text(
+        _render_posture(run_id, findings, issues, rollups, delta, previous_run_id, attack_scenarios, governance_report)
+    )
 
     by_domain_path = report_dir / "by-domain.md"
     by_domain_path.write_text(_render_by_domain(rollups))
@@ -90,6 +97,9 @@ def write_reports(
     attack_scenarios_path = report_dir / "attack-scenarios.md"
     attack_scenarios_path.write_text(_render_attack_scenarios(attack_scenarios, findings))
 
+    governance_path = report_dir / "governance.md"
+    governance_path.write_text(_render_governance(governance_report))
+
     return {
         "findings_json": str(findings_path),
         "issues_json": str(issues_path),
@@ -98,6 +108,7 @@ def write_reports(
         "remediation_board_md": str(remediation_path),
         "compliance_view_md": str(compliance_path),
         "attack_scenarios_md": str(attack_scenarios_path),
+        "governance_md": str(governance_path),
     }
 
 
@@ -109,8 +120,24 @@ def _render_posture(
     delta: dict,
     previous_run_id: Optional[str],
     attack_scenarios: Optional[list[dict]] = None,
+    governance_report: Optional[dict] = None,
 ) -> str:
     lines = [f"# Posture Report — {run_id}", ""]
+
+    if governance_report and governance_report["verdict"] == "critical":
+        lines += [
+            "# \U0001f7e5 GOVERNANCE ALERT \U0001f7e5",
+            "",
+            "**WARDEN HAS HALTED THIS FLEET.** A governance verdict of `critical` was reached this run — "
+            f"see `governance.md` for the full PolicyCop/CostCop/Ethica breakdown. Reason: "
+            f"{governance_report['escalation_reason']}",
+            "",
+            "No further `full-sweep`/`delta-sweep`/`target`/`red-team-recon` run will start until a human "
+            "operator reviews this and runs `python3 -m engine.cli resume`.",
+            "",
+            "---",
+            "",
+        ]
 
     lines += ["## Executive summary", ""]
     if issues:
@@ -182,6 +209,34 @@ def _render_posture(
                 f"- **{scenario['title']}** — likelihood {scenario['likelihood']}, "
                 f"confidence {scenario['confidence']:.2f}, chains {len(scenario['chained_finding_ids'])} finding(s)"
             )
+        lines.append("")
+
+    lines += ["## Governance: Warden's oversight report", ""]
+    if governance_report is None:
+        lines.append("Governance review did not run this run — see `governance.md`.")
+        lines.append("")
+    else:
+        verdict = governance_report["verdict"]
+        badge = {"clear": "🟢 CLEAR", "warning": "🟡 WARNING", "critical": "🔴 CRITICAL — FLEET HALTED"}[verdict]
+        lines.append(f"**Verdict: {badge}**")
+        lines.append("")
+        lines.append(
+            f"- PolicyCop: {len(governance_report['policy']['violations'])} regulatory finding(s) across "
+            f"{', '.join(governance_report['policy']['regulations_checked'])}"
+        )
+        cost = governance_report["cost"]
+        cost_note = (
+            f"{cost['remaining_pct']}% of budget remaining ({cost['spent_tokens']}/{cost['budget_tokens']} tokens spent)"
+            if cost["measured"]
+            else "not measured this run (no live session reported usage)"
+        )
+        alert_note = " — **below alert threshold**" if cost["alert"] else ""
+        lines.append(f"- CostCop: {cost_note}{alert_note}")
+        lines.append(f"- Ethica: {len(governance_report['ethics']['flags'])} guardrail flag(s)")
+        if governance_report["escalation_reason"]:
+            lines.append(f"- Escalation: {governance_report['escalation_reason']}")
+        lines.append("")
+        lines.append("Full breakdown in `governance.md`.")
         lines.append("")
 
     lines += ["## Delta vs. previous run", ""]
@@ -356,6 +411,82 @@ def _render_attack_scenarios(attack_scenarios: Optional[list[dict]], findings: l
             f = findings_by_id.get(fid)
             if f:
                 lines.append(f"- **{f['title']}** (risk {f.get('risk_score', 'n/a')}) — `{f['domain']}` / `{f['asset']['asset_id']}`")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_governance(governance_report: Optional[dict]) -> str:
+    lines = [
+        "# Governance Report (Warden / PolicyCop / CostCop / Ethica)",
+        "",
+        "Tier G's oversight of this run — **the fleet's own conduct and cost, not a target's risk.** "
+        "Warden compiles PolicyCop's EU regulatory/legislative check, CostCop's token-budget status, and "
+        "Ethica's non-exploitation/guardrail check into one verdict. See `.claude/agents/warden.md`, "
+        "`policy-cop.md`, `cost-cop.md`, and `ethica.md` for each role's mandate, and `engine/governance.py` "
+        "for the deterministic logic behind every number below — none of it is agent judgement.",
+        "",
+    ]
+
+    if governance_report is None:
+        lines.append("Governance review did not run this run.")
+        lines.append("")
+        return "\n".join(lines)
+
+    verdict = governance_report["verdict"]
+    badge = {"clear": "🟢 CLEAR", "warning": "🟡 WARNING", "critical": "🔴🔴🔴 CRITICAL — FLEET HALTED 🔴🔴🔴"}[verdict]
+    lines.append(f"## Verdict: {badge}")
+    lines.append("")
+    if governance_report["escalation_reason"]:
+        lines.append(f"**Escalation reason:** {governance_report['escalation_reason']}")
+        lines.append("")
+    if governance_report["kill_switch_engaged"]:
+        lines.append(
+            "**Warden has engaged the kill switch and written a fleet-wide halt flag.** No further "
+            "`full-sweep`/`delta-sweep`/`target`/`red-team-recon` run will start until a human operator "
+            "runs `python3 -m engine.cli resume` — see RUNBOOK.md."
+        )
+        lines.append("")
+
+    lines += ["## PolicyCop — EU regulatory/legislative compliance", ""]
+    policy = governance_report["policy"]
+    lines.append(f"Regulations checked: {', '.join(policy['regulations_checked'])}")
+    lines.append("")
+    if not policy["violations"]:
+        lines.append("No regulatory findings this run.")
+        lines.append("")
+    else:
+        for v in sorted(policy["violations"], key=lambda v: {"critical": 0, "warning": 1, "info": 2}[v["severity"]]):
+            lines.append(f"- **[{v['severity'].upper()}] {v['regulation']}** — {v['rule']}: {v['description']}")
+        lines.append("")
+
+    lines += ["## CostCop — token-spend budget", ""]
+    cost = governance_report["cost"]
+    if not cost["measured"]:
+        lines.append(
+            f"Not measured this run — no live session has reported usage via `engine.cli record-usage`. "
+            f"Budget on file: {cost['budget_tokens']} tokens, alert threshold {cost['alert_threshold_pct']}%."
+        )
+    else:
+        lines.append(
+            f"Spent {cost['spent_tokens']} / {cost['budget_tokens']} tokens — "
+            f"**{cost['remaining_pct']}% remaining** (alert threshold {cost['alert_threshold_pct']}%)."
+        )
+        if cost["alert"]:
+            lines.append("")
+            lines.append("**⚠️ Below alert threshold — CostCop has raised a budget alert.**")
+    lines.append("")
+
+    lines += ["## Ethica — non-exploitation / guardrail conduct", ""]
+    ethics = governance_report["ethics"]
+    lines.append(f"Guardrails checked: {', '.join(ethics['guardrails_checked'])}")
+    lines.append("")
+    if not ethics["flags"]:
+        lines.append("No guardrail flags this run — every check passed.")
+        lines.append("")
+    else:
+        for flag in sorted(ethics["flags"], key=lambda f: {"critical": 0, "warning": 1, "info": 2}[f["severity"]]):
+            lines.append(f"- **[{flag['severity'].upper()}] {flag['guardrail']}** — {flag['description']}")
         lines.append("")
 
     return "\n".join(lines)

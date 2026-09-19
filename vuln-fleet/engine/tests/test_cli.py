@@ -127,6 +127,20 @@ def _redirect_red_team_scope_files(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _redirect_token_budget_files(tmp_path, monkeypatch):
+    """Tests must never write to the real scope/token-usage-ledger.yaml
+    -- redirect both CostCop files to a tmp copy with the same shape as
+    the real files' steady state."""
+    budget_path = tmp_path / "token-budget.yaml"
+    budget_path.write_text("budget_tokens: 1000\nalert_threshold_pct: 20\n")
+    ledger_path = tmp_path / "token-usage-ledger.yaml"
+    ledger_path.write_text("entries: []\n")
+    monkeypatch.setattr(cli, "TOKEN_BUDGET_PATH", budget_path)
+    monkeypatch.setattr(cli, "TOKEN_LEDGER_PATH", ledger_path)
+    return {"budget": budget_path, "ledger": ledger_path}
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_dns_recon_network(monkeypatch):
     """red-team-recon's own real network seams (DNS resolution, crt.sh,
     TLS handshake, HTTP requests) -- kept hermetic here the same way
@@ -340,3 +354,88 @@ def test_kill_flag_actually_stops_a_subsequent_full_sweep(tmp_path):
     assert exit_code == 0  # a killed run still completes with a partial report, not a crash
     posture_text = (tmp_path / "reports" / "killed-run" / "posture.md").read_text()
     assert "kill_switch" in posture_text
+
+
+# -- governance: halt/resume/record-usage/governance-status --------------------
+
+
+def test_halt_command_writes_flag(capsys, tmp_path):
+    exit_code = cli.main(["halt", "--reason", "manual test halt"])
+
+    assert exit_code == 0
+    assert (tmp_path / "reports" / "FLEET_HALT.flag").exists()
+    assert "halt flag written" in capsys.readouterr().out.lower()
+
+
+def test_resume_command_clears_flag(capsys):
+    cli.main(["halt", "--reason", "manual test halt"])
+
+    exit_code = cli.main(["resume"])
+
+    assert exit_code == 0
+    assert "cleared" in capsys.readouterr().out.lower()
+    assert cli.governance.fleet_halt_status(cli._halt_flag_path()) is None
+
+
+def test_resume_command_when_not_halted(capsys):
+    exit_code = cli.main(["resume"])
+
+    assert exit_code == 0
+    assert "no fleet-wide halt" in capsys.readouterr().out.lower()
+
+
+def test_halted_fleet_refuses_a_full_sweep(capsys):
+    cli.main(["halt", "--reason", "something is off"])
+
+    exit_code = cli.main(["full-sweep", "--run-id", "should-not-run"])
+
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "halted" in err.lower()
+    assert "something is off" in err
+
+
+def test_resume_then_full_sweep_proceeds():
+    cli.main(["halt", "--reason", "something is off"])
+    cli.main(["resume"])
+
+    exit_code = cli.main(["full-sweep", "--run-id", "now-allowed"])
+
+    assert exit_code == 0
+
+
+def test_record_usage_writes_ledger_and_prints_status(capsys):
+    exit_code = cli.main(["record-usage", "run-1", "300"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "300" in out
+    assert "1000" in out
+
+
+def test_record_usage_warns_on_stderr_when_alert_threshold_crossed(capsys):
+    exit_code = cli.main(["record-usage", "run-1", "850"])  # budget 1000, threshold 20% -> 15% remaining
+
+    assert exit_code == 0
+    assert "alert" in capsys.readouterr().err.lower()
+
+
+def test_governance_status_reports_not_measured_and_not_halted(capsys):
+    exit_code = cli.main(["governance-status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Not measured" in out
+    assert "Not halted" in out
+
+
+def test_governance_status_reflects_recorded_usage_and_halt(capsys):
+    cli.main(["record-usage", "run-1", "300"])
+    cli.main(["halt", "--reason", "test"])
+
+    exit_code = cli.main(["governance-status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "300/1000" in out
+    assert "HALTED" in out

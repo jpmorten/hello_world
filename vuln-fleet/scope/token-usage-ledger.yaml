@@ -1,0 +1,7 @@
+# Append-only record of real token spend a live Claude Code session
+# reported for a run via `python3 -m engine.cli record-usage <run_id>
+# <tokens>` (see engine/token_budget.py). Starts empty -- an empty
+# ledger means "nobody has ever reported usage," not "zero was spent";
+# engine/token_budget.py's status() surfaces that distinction as
+# cost.measured=false rather than silently defaulting to 0.
+entries: []

@@ -11,9 +11,10 @@ from pathlib import Path
 import pytest
 
 from adapters.mock import api_surface, supply_chain
+from engine import governance
 from engine.orchestrator import DomainSpec, Orchestrator
 from engine.scope import ScopeModel
-from schema.validate import validate_event, validate_finding
+from schema.validate import validate_event, validate_finding, validate_governance_report
 
 REPO_SCOPE_DIR = Path(__file__).parent.parent.parent / "scope"
 
@@ -504,3 +505,93 @@ def test_attack_scenario_analysis_skipped_with_no_findings(tmp_path):
     result = orchestrator.run(empty_spec)
 
     assert result["attack_scenarios"] == []
+
+
+# -- governance review (Tier G) -----------------------------------------------
+
+
+def test_every_run_produces_a_schema_valid_governance_report(tmp_path):
+    """Unlike attack-scenario analysis, governance needs no live agent
+    wired in to produce a real result -- PolicyCop/CostCop/Ethica's
+    checks are deterministic code, so every run gets one."""
+    result = _run(tmp_path)
+
+    report = result["governance_report"]
+    assert report is not None
+    validate_governance_report(report)
+    assert report["run_id"] == "e2e-run"
+
+    events = _log_events(tmp_path)
+    governance_events = [e for e in events if e["event_type"] == "governance_report"]
+    assert len(governance_events) == 1
+    assert governance_events[0]["agent_role"] == "warden"
+    assert governance_events[0]["details"]["report_id"] == report["report_id"]
+
+    governance_text = Path(result["report_paths"]["governance_md"]).read_text()
+    assert "PolicyCop" in governance_text
+    assert "CostCop" in governance_text
+    assert "Ethica" in governance_text
+
+
+def test_critical_governance_verdict_triggers_kill_switch_and_fleet_halt(tmp_path, monkeypatch):
+    """A live Warden's automatic response to its own critical verdict:
+    the run's own kill switch is engaged (a record -- there's nothing
+    left to stop this late) and a fleet-wide halt flag is written that a
+    NEXT run must check before it can start."""
+
+    def forced_critical(**kwargs):
+        return {
+            "report_id": "f" * 64,
+            "run_id": kwargs["run_id"],
+            "generated_at": "2026-01-01T00:00:00Z",
+            "policy": {"regulations_checked": [], "violations": []},
+            "cost": {
+                "measured": False, "budget_tokens": 1, "spent_tokens": 0, "remaining_tokens": 1,
+                "remaining_pct": 100.0, "alert_threshold_pct": 20.0, "alert": False,
+            },
+            "ethics": {"guardrails_checked": [], "flags": []},
+            "verdict": "critical",
+            "kill_switch_engaged": True,
+            "escalation_reason": "forced for test",
+        }
+
+    monkeypatch.setattr(governance, "compile_governance_report", forced_critical)
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=tmp_path / "reports",
+        domain_budgets={"supply-chain": 3, "api-surface": 3},
+    )
+    result = orchestrator.run(_domain_specs())
+
+    assert result["governance_report"]["verdict"] == "critical"
+    assert orchestrator.spawn_manager.kill_switch_active is True
+    assert orchestrator.halt_flag_path.exists()
+
+    halt_record = governance.fleet_halt_status(orchestrator.halt_flag_path)
+    assert halt_record["reason"] == "forced for test"
+
+    events = _log_events(tmp_path)
+    assert any(e["event_type"] == "escalation" and e["severity"] == "critical" for e in events)
+
+    posture_text = Path(result["report_paths"]["posture_md"]).read_text()
+    assert "GOVERNANCE ALERT" in posture_text
+
+
+def test_fleet_halt_refuses_a_subsequent_run_until_resumed(tmp_path):
+    reports_dir = tmp_path / "reports"
+    halt_path = reports_dir / "FLEET_HALT.flag"
+    governance.trigger_fleet_halt("prior critical verdict", "some-report-id", halt_path)
+
+    orchestrator = Orchestrator(
+        "e2e-run", _scope_model(), log_dir=tmp_path / "logs", report_dir=reports_dir,
+        domain_budgets={"supply-chain": 3, "api-surface": 3},
+    )
+
+    with pytest.raises(governance.FleetHalted):
+        orchestrator.run(_domain_specs())
+
+    # refused before anything was even logged for this run_id
+    assert not (tmp_path / "logs" / "e2e-run.ndjson").exists()
+
+    governance.clear_fleet_halt(halt_path)
+    orchestrator.run(_domain_specs())  # now proceeds normally

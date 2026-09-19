@@ -481,16 +481,87 @@ Build is proceeding per the staged build order. Completed so far:
     findings, `null` on the passive ones) and every finding's `scope_ref`
     correctly attributing its real source file.
 
+16. **Tier G: governance (Warden, PolicyCop, CostCop, Ethica)** — a new
+    tier above every domain agent and above the Tier 0.5 attack-scenario
+    analyst, watching the fleet's own conduct and cost rather than a
+    target's risk. Four new roles, each with its own
+    `.claude/agents/*.md` definition:
+    - **PolicyCop** (`engine/policy_checks.py`) — five deterministic
+      checks against this fleet's own real repo state, each mapped to
+      the EU regulation it's actually about: tool-boundary discipline
+      and finding-schema transparency fields (EU AI Act), remediation
+      guidance required (CRA), stale-authorization hygiene and no
+      hardcoded secrets in tracked config (NIS2/GDPR). These are the
+      same four regulations `schema/finding.schema.json`'s
+      `regulatory_tags` enum already names.
+    - **CostCop** (`engine/token_budget.py`) — real arithmetic over a
+      new append-only ledger (`scope/token-usage-ledger.yaml`) against a
+      declared budget (`scope/token-budget.yaml`), alerting once
+      remaining budget drops below a configured threshold (20% by
+      default). A run's real token cost is never estimated or
+      fabricated — only a live Claude Code session actually knows its
+      own usage, recorded via the new `python3 -m engine.cli
+      record-usage <run_id> <tokens>`; an unrecorded run stays honestly
+      `measured: false`.
+    - **Ethica** (`engine/ethics_checks.py`) — four defense-in-depth
+      checks over a completed run's own findings/scenarios/event log
+      (no self-exploitation, predictions never validated, refused
+      targets produce no findings, red-team never captures response
+      content). Ethica's tool grant is `Read, Grep, Glob` only — no
+      `Bash` — the same structural non-action guarantee
+      `attack-scenario-analyst.md` holds itself to: an ethics watchdog
+      that could act on its own findings wouldn't be a watchdog.
+    - **Warden** (`engine/governance.py`) — combines all three into one
+      `GovernanceReport` (`schema/governance_report.schema.json`) and a
+      single verdict (`clear`/`warning`/`critical`), computed
+      deterministically from the worst severity PolicyCop/Ethica raised
+      plus CostCop's alert flag — not Warden's own judgement call. A
+      `critical` verdict is where this tier gets real teeth: the
+      orchestrator logs a critical `escalation` event and writes a
+      fleet-wide halt flag (`reports/FLEET_HALT.flag`, checked at the
+      very start of `Orchestrator.run()`) that refuses every subsequent
+      `full-sweep`/`delta-sweep`/`target`/`red-team-recon` invocation
+      until a human runs the new `python3 -m engine.cli resume` — this
+      halt is deliberately not something any agent, Warden included, can
+      clear on its own. This is a genuinely new capability, not a
+      per-run kill: the existing `<run_id>.kill` flag (step 10) stops
+      one in-flight run; `FLEET_HALT.flag` stops the *next* run from
+      starting at all.
+
+    Governance review runs unconditionally, once per run, right after
+    the attack-scenario-analyst — unlike that stage, it needs no live
+    agent wired in to produce a real result, because PolicyCop/CostCop/
+    Ethica's checks are all deterministic, unit-tested code (the same
+    governance principle `engine/scope.py` already applies to scope
+    decisions). A live Warden/PolicyCop/CostCop/Ethica session adds
+    narrative and, for Warden alone, the discretion to escalate a
+    concern the fixed rules didn't catch — it never recomputes the
+    numbers underneath. `engine/reports.py` gained an eighth report,
+    `governance.md`, plus a "Governance: Warden's oversight report"
+    section in `posture.md` that renders an impossible-to-miss red
+    banner at the top of the whole report when the verdict is critical.
+
+    Verified live: a real `full-sweep` against Stibo's own scope
+    produced a `clear` verdict (no policy violations, no ethics flags,
+    cost not yet measured) — the honest, expected result for a fleet
+    that has never actually violated any of its own guardrails, not a
+    fabricated demonstration. A dedicated hermetic test
+    (`test_critical_governance_verdict_triggers_kill_switch_and_fleet_halt`)
+    forces a critical verdict via a synthetic report to prove the
+    kill-switch/halt-flag wiring actually works, without inventing a
+    real violation that was never there.
+
 Not built yet: real adapters for the remaining 6 Tier 1 domains — blocked
 on real credentialed infrastructure access this exercise doesn't have,
 not on more engineering effort. `red-team-recon` is complete for the
 scope described above; extending it (more passive signal sources, more
 benign active checks) is additional engineering effort, not blocked on
-anything this exercise lacks. `attack-scenario-analyst` is complete as a
-pipeline (schema, integrity checks, orchestrator wiring, reporting) and
-as an agent definition; running it for real requires a live Claude Code
-session (not this repo's own test/CLI path), same as every other
-`.claude/agents/*.md` definition in this fleet.
+anything this exercise lacks. `attack-scenario-analyst` and the Tier G
+governance roles (`warden`, `policy-cop`, `cost-cop`, `ethica`) are
+complete as pipelines (schema, integrity checks, orchestrator wiring,
+reporting) and as agent definitions; running any of them for real
+requires a live Claude Code session (not this repo's own test/CLI path),
+same as every other `.claude/agents/*.md` definition in this fleet.
 
 ## Running the tests
 

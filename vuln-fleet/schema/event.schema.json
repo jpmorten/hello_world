@@ -56,6 +56,7 @@
         "finding",
         "finding_dedupe",
         "attack_scenario",
+        "governance_report",
         "escalation",
         "budget_exhausted",
         "heartbeat",
@@ -82,7 +83,7 @@
     },
     "details": {
       "type": "object",
-      "description": "Event-type-specific payload. For event_type=finding, this is a Finding object per finding.schema.json. For event_type=attack_scenario, this is an AttackScenario object per attack_scenario.schema.json."
+      "description": "Event-type-specific payload. For event_type=finding, this is a Finding object per finding.schema.json. For event_type=attack_scenario, this is an AttackScenario object per attack_scenario.schema.json. For event_type=governance_report (and the escalation/kill_switch events a critical verdict also triggers), this is a GovernanceReport object per governance_report.schema.json."
     },
     "integrity_hash": {
       "type": "string",
