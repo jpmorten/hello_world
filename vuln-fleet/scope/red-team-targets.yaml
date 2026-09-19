@@ -9,3 +9,10 @@ assets:
   criticality: medium
   targets:
   - domain:example.com
+- asset_id: red-team-stibo.com
+  entity: red-team-engagement
+  type: external_domain
+  owner_team: jepm@stibo.com
+  criticality: medium
+  targets:
+  - domain:stibo.com
