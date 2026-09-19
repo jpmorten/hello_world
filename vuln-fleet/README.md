@@ -420,8 +420,11 @@ Build is proceeding per the staged build order. Completed so far:
     (`schema/event.schema.json`) alongside `finding` events.
 
     `analysts/mock/attack_scenario.py` is the CLI/test path's
-    placeholder (wired into `full-sweep`/`delta-sweep` by default via
-    `engine/cli.py`), and it's a different kind of mock than the
+    placeholder (wired into every CLI-driven run --
+    `full-sweep`/`delta-sweep`/`target`/`red-team-recon` -- by default
+    via `engine/cli.py`; a directly-constructed `Orchestrator`, as most
+    of the test suite uses, leaves it off unless a test opts in), and
+    it's a different kind of mock than the
     original nine domains': genuine attack-scenario prediction is
     reasoning about context, not a fact retrievable from an API the way
     `adapters/supply_chain.py` made OSV.dev lookups real, so there's no

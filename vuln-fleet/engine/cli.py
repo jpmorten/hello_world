@@ -175,6 +175,7 @@ def cmd_target(args: argparse.Namespace) -> int:
         report_dir=REPORT_DIR,
         domain_budgets={d: 3 for d in matching_domains},
         previous_run_id=args.previous_run_id,
+        attack_scenario_fn=mock_attack_scenario.synthesize,
     )
     specs = [
         DomainSpec(
@@ -278,6 +279,13 @@ def cmd_red_team_recon(args: argparse.Namespace) -> int:
         report_dir=REPORT_DIR,
         domain_budgets={RED_TEAM_DOMAIN.domain: 1},
         previous_run_id=args.previous_run_id,
+        # A single target can still produce plenty to chain -- this run's
+        # own DNS/email/CT-log/TLS/HTTP checks are exactly the kind of
+        # varied findings a white-hat analyst would look at together
+        # (e.g. "100 discovered subdomains" + "missing security headers"
+        # is a real chain), so there's no good reason to withhold this
+        # stage just because the sweep covered one domain instead of nine.
+        attack_scenario_fn=mock_attack_scenario.synthesize,
     )
     spec = DomainSpec(
         domain=RED_TEAM_DOMAIN.domain,
