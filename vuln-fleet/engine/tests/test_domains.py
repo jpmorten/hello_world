@@ -8,7 +8,12 @@ supply_chain.py, adapters/firmware_hardware.py): both call out to
 OSV.dev/CISA KEV/FIRST.org EPSS/NVD over the network by default. The
 autouse fixture below patches those HTTP seams with frozen fixture data
 so this file's tests stay hermetic and fast, the same as every other
-adapter in the registry (still mocks, no I/O at all).
+adapter in the registry (still mocks, no I/O at all). api-surface
+(adapters/api_surface.py) is also real, but its own HTTP seam
+(_http_get_text) is never reached here: no current scope target has a
+spec URL mapped in api_surface._SPEC_URL_BY_TARGET, so scan() returns []
+without any network call — an honest "nothing to check yet," not a
+fixture that needs patching.
 """
 import json
 from pathlib import Path
@@ -178,11 +183,13 @@ def test_full_sweep_across_all_nine_domains(tmp_path):
     result = orchestrator.run(specs)
 
     assert set(result["rollups"]) == set(DOMAIN_REGISTRY)
-    # 8 mock findings (api-surface:1, infra-network:2, infra-cloud:1,
-    # code-firstparty:1, identity-access:1, endpoint-posture:1,
-    # data-exposure:1) + 1 real supply-chain finding + 1 real
-    # firmware-hardware finding, both from the patched fixtures.
-    assert len(result["findings"]) == 10
+    # 7 mock findings (infra-network:2, infra-cloud:1, code-firstparty:1,
+    # identity-access:1, endpoint-posture:1, data-exposure:1) + 1 real
+    # supply-chain finding + 1 real firmware-hardware finding, both from
+    # the patched fixtures. api-surface is real but contributes 0: no
+    # current scope target has a spec URL mapped, so it returns []
+    # honestly rather than fabricating a finding to keep the count even.
+    assert len(result["findings"]) == 9
 
     for finding in result["findings"]:
         validate_finding(finding)

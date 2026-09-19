@@ -237,7 +237,7 @@ Build is proceeding per the staged build order. Completed so far:
     intelligence data, secret exposure) versus what's a documented gap
     (no active `prompt_injection_suspected` detection yet, no redaction
     runtime), human-oversight/EU-AI-Act posture, and known accuracy
-    limitations (CVE-only correlation, no Annex A control mapping, 8 of
+    limitations (CVE-only correlation, no Annex A control mapping, 6 of
     9 domains still on mock adapters). The runbook covers starting a
     run, approving an active-scan authorization, reading and verifying
     the hash-chained log, responding to a scope violation, killing a
@@ -263,13 +263,42 @@ Build is proceeding per the staged build order. Completed so far:
     is gone — replaced by what NVD actually reports, not a fabricated
     drama beat).
 
-    The other 7 domains (`infra-network`, `infra-cloud`, `api-surface`,
-    `identity-access`, `endpoint-posture`, `data-exposure`,
-    `code-firstparty`) can't follow either of these two patterns: their
-    finding types are inherently org-internal telemetry (firewall rules,
-    IAM policy, IdP audit logs, EDR consoles, encryption-at-rest status,
-    private source code) with no public read-only feed standing in for
-    them the way CISA/EPSS/NVD/OSV.dev do for CVE data. Making them real
+12. **Third real adapter: `api-surface`** — `adapters/api_surface.py` is
+    static security analysis of a *fetched OpenAPI/Swagger spec document*,
+    not an active probe of the live API it describes: an operation with no
+    security requirement (global or per-operation), an operation still
+    defined despite `deprecated: true`, a `servers[]` entry declared over
+    plain `http://`, and multiple major API version families (`/v1/`,
+    `/v2/`, ...) coexisting in one document. All four are real structural
+    facts about the document itself, readable without touching the live
+    server. Two of the four things the design brief lists for api-surface
+    — undocumented/zombie endpoints (found by diffing the spec against
+    real traffic) and broken object-level authorization (found by actually
+    calling endpoints with different identities) — are inherently active
+    techniques this fleet doesn't build against a target that doesn't
+    actually exist, for the same reason firmware-hardware's writeup gives:
+    fabricating results against a fictional company's fictional traffic
+    would violate the no-fabrication rule, not extend it.
+
+    Verified live against a real, public spec (Swagger's official
+    Petstore demo, `https://petstore3.swagger.io/api/v3/openapi.json`):
+    the adapter correctly flags 10 of its 19 real operations as having no
+    security requirement at all — a genuine finding against a spec this
+    project doesn't control, not a fixture. What's still a placeholder:
+    `_SPEC_URL_BY_TARGET` (which target maps to which spec URL) is empty,
+    because no current `scope/assets.yaml` target has a real, reachable
+    OpenAPI spec to point at — so `scan()` honestly returns `[]` for
+    `cms-edge` today rather than wiring in a fabricated spec URL just to
+    produce a nonzero finding count.
+
+    The other 6 domains (`infra-network`, `infra-cloud`, `identity-access`,
+    `endpoint-posture`, `data-exposure`, `code-firstparty`) can't follow
+    any of these three patterns: their finding types are inherently
+    org-internal telemetry (firewall rules, IAM policy, IdP audit logs,
+    EDR consoles, encryption-at-rest status, private source code) with no
+    public read-only feed standing in for them the way CISA/EPSS/NVD/
+    OSV.dev do for CVE data, and no public document format standing in for
+    them the way an OpenAPI spec does for api-surface. Making them real
     needs real credentialed access to real Stibo CMDB/Defender/Wiz/
     Entra-equivalent systems — which, since Stibo Software Group is an
     example company built for this exercise, don't exist to connect to.
@@ -277,7 +306,7 @@ Build is proceeding per the staged build order. Completed so far:
     this whole project has held to since step 1: never report a number
     you can't evidence.
 
-Not built yet: real adapters for the remaining 7 domains — blocked on
+Not built yet: real adapters for the remaining 6 domains — blocked on
 real credentialed infrastructure access this exercise doesn't have, not
 on more engineering effort.
 
