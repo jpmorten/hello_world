@@ -240,6 +240,37 @@ def test_real_red_team_scope_files_load_and_merge_without_error():
 # -- multi-file assets/authorizations merging -----------------------------
 
 
+def test_scope_ref_names_the_actual_source_file_in_a_multi_file_model(tmp_path):
+    """A regression guard: resolve() used to hardcode scope_ref to
+    "assets.yaml#<id>" for every asset regardless of which file it
+    actually came from -- misattributing every red-team-targets.yaml
+    asset's scope_ref to a file it was never in."""
+    extra_assets = tmp_path / "extra-assets.yaml"
+    extra_assets.write_text(
+        yaml.safe_dump(
+            {
+                "entities": [{"id": "external", "name": "External Target"}],
+                "assets": [
+                    {
+                        "asset_id": "extra-domain",
+                        "entity": "external",
+                        "type": "external_domain",
+                        "owner_team": "someone@example.com",
+                        "criticality": "medium",
+                        "targets": ["domain:extra.example.com"],
+                    }
+                ],
+            }
+        )
+    )
+    model = ScopeModel(
+        [FIXTURE_DIR / "assets.yaml", extra_assets], FIXTURE_DIR / "exclusions.yaml", FIXTURE_DIR / "authorized-active.yaml"
+    )
+
+    assert model.resolve("repo:stibo/checkout").scope_ref == "assets.yaml#svc-checkout"
+    assert model.resolve("domain:extra.example.com").scope_ref == "extra-assets.yaml#extra-domain"
+
+
 def test_assets_path_accepts_a_list_and_merges_entities_and_assets(tmp_path):
     extra_assets = tmp_path / "extra-assets.yaml"
     extra_assets.write_text(

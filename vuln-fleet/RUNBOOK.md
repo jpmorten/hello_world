@@ -14,6 +14,8 @@ python3 -m engine.cli full-sweep
 
 This picks a timestamped `run_id` automatically (`full-sweep-<UTC timestamp>`), sweeps every domain in `engine/domains.py`'s `DOMAIN_REGISTRY`, and prints a summary: finding/issue counts, the delta vs. nothing (a first run has no baseline, so everything is `new`), any coverage gaps, and the report paths.
 
+If `scope/red-team-targets.yaml` has ever had a domain registered via `red-team-recon` (see below), `full-sweep`/`delta-sweep` also sweep the **most recently registered one** — the last entry in that file, i.e. whichever domain someone most recently asked this fleet to reconnoiter — as a tenth domain, `red-team-recon`, in the same run and the same report. There's no separate step to remember: run a `red-team-recon` once for a domain, and every full/delta sweep from then on carries it forward automatically until a different domain is registered. Active checks (TLS/HTTP-header/exposed-path) join in only if a still-valid self-attested authorization is already on file for it (`scope/red-team-active-authorizations.yaml`); otherwise that domain gets the same honest passive-only default a bare `red-team-recon <domain>` invocation would — never assumed. If no domain has ever been registered, the sweep behaves exactly as before (nine domains, no red-team-recon section in the report). This is the purple-team integration point: the same schema, risk scoring, and report suite carries both blue- and red-team findings, including into the same attack-scenario-analyst pass (see below), which can chain a red-team finding with an internal one if the two are its highest-risk pair.
+
 After every domain reports in, a Tier 0.5 attack-scenario-analyst pass runs once over the whole run's findings and predicts plausible attack chains — narrative prediction only, nothing tested or attempted (see "Predicted attack scenarios" below and `THREAT-MODEL.md`). `full-sweep`, `delta-sweep`, `target`, and `red-team-recon` all wire this in by default: even a single-target run can produce enough varied findings to chain (e.g. `red-team-recon`'s own DNS/CT-log/TLS/HTTP checks routinely do).
 
 **Delta sweep** (same, but diffed against the last completed run):
@@ -36,7 +38,7 @@ Live Claude Code session equivalents: `/full-sweep`, `/delta-sweep`, `/target <r
 
 ## Running a red-team recon against an external domain
 
-`red-team-recon` is a separate capability from the sweep above — not one of the nine Tier 1 domains, not swept by `full-sweep`/`delta-sweep` — for reconnoitering an arbitrary, externally-supplied DNS domain the way a red team would, without ever exploiting anything it finds. **Only ever run this against a domain you own or are authorized to assess.**
+`red-team-recon` is a separate capability from the sweep above — not one of the nine Tier 1 domains in `DOMAIN_REGISTRY` — for reconnoitering an arbitrary, externally-supplied DNS domain the way a red team would, without ever exploiting anything it finds. Once you've registered a domain this way, `full-sweep`/`delta-sweep` carry it forward automatically as described above (the most recently registered one, each time) — you don't need to run this again just to keep it included in later sweeps, only to register a domain the first time, to renew an active-check authorization, or to reconnoiter a different domain. **Only ever run this against a domain you own or are authorized to assess.**
 
 ```bash
 python3 -m engine.cli red-team-recon example.com --requested-by "you@example.com"

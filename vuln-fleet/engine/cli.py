@@ -45,12 +45,35 @@ def _scope_model() -> ScopeModel:
     return ScopeModel(SCOPE_DIR / "assets.yaml", SCOPE_DIR / "exclusions.yaml", SCOPE_DIR / "authorized-active.yaml")
 
 
-def _red_team_scope_model() -> ScopeModel:
+def _merged_scope_model() -> ScopeModel:
+    """Stibo's own assets.yaml merged with red-team-recon's externally-
+    supplied targets file -- used by both cmd_red_team_recon and
+    _run_sweep now that a full/delta sweep includes the last-selected
+    red-team target alongside the nine Tier 1 domains."""
     return ScopeModel(
         [SCOPE_DIR / "assets.yaml", RED_TEAM_TARGETS_PATH],
         SCOPE_DIR / "exclusions.yaml",
         [SCOPE_DIR / "authorized-active.yaml", RED_TEAM_AUTH_PATH],
     )
+
+
+def _last_red_team_target() -> Optional[str]:
+    """The domain of the most recently registered red-team-recon target
+    -- the last entry in scope/red-team-targets.yaml's assets list, which
+    _register_red_team_target only ever appends to -- or None if no
+    domain has ever been registered. "Last selected" is that file's own
+    append-only history, not a separate pointer this module has to keep
+    in sync with it."""
+    if not RED_TEAM_TARGETS_PATH.exists():
+        return None
+    doc = yaml.safe_load(RED_TEAM_TARGETS_PATH.read_text()) or {}
+    assets = doc.get("assets") or []
+    if not assets:
+        return None
+    for target_ref in assets[-1].get("targets") or []:
+        if target_ref.startswith("domain:"):
+            return target_ref[len("domain:") :]
+    return None
 
 
 def _new_run_id(prefix: str) -> str:
@@ -111,13 +134,49 @@ def _print_summary(run_id: str, result: dict) -> None:
 
 
 def _run_sweep(run_id: str, previous_run_id: Optional[str], domains: Optional[list[str]], max_concurrent: int) -> dict:
-    scope = _scope_model()
+    # _merged_scope_model (not the Stibo-only _scope_model) so a red-team
+    # target below resolves against the same ScopeModel the Tier 1
+    # domains do -- one run, one scope resolution, one report.
+    scope = _merged_scope_model()
+    domain_budgets = {d: max_concurrent for d in DOMAIN_REGISTRY}
+    specs = build_domain_specs(scope, domains=domains)
+
+    # Folds the purple-team story into every full/delta sweep: whichever
+    # domain was last submitted through red-team-recon (the last entry in
+    # scope/red-team-targets.yaml -- an operator's most recent "go look at
+    # this" request) rides along in the same run as Stibo's own nine
+    # domains, rather than staying a separate invocation someone has to
+    # remember to run and reconcile by hand. Active checks only join in if
+    # a still-valid self-attested authorization is already on file for it
+    # (cleared first so a stale one from a prior process can never leak in
+    # -- see adapters/dns_recon.py's module docstring); otherwise this
+    # target gets the same honest passive-only default a bare
+    # `red-team-recon <domain>` run would.
+    dns_recon._ACTIVE_AUTHORIZATION_BY_TARGET.clear()
+    red_team_domain = _last_red_team_target()
+    if red_team_domain and (domains is None or RED_TEAM_DOMAIN.domain in domains):
+        target_ref = f"domain:{red_team_domain}"
+        try:
+            authorization = scope.check_active_authorization(target_ref, _ACTIVE_AUTHORIZATION_ACTION)
+            dns_recon._ACTIVE_AUTHORIZATION_BY_TARGET[target_ref] = authorization.authorization_ref
+        except ScopeViolation:
+            pass  # no valid authorization on file -- passive checks only, same as red-team-recon's own default
+        specs = specs + [
+            DomainSpec(
+                domain=RED_TEAM_DOMAIN.domain,
+                worker_role=RED_TEAM_DOMAIN.worker_role,
+                targets=[target_ref],
+                adapter_fn=RED_TEAM_DOMAIN.adapter_fn,
+            )
+        ]
+        domain_budgets[RED_TEAM_DOMAIN.domain] = 1
+
     orchestrator = Orchestrator(
         run_id,
         scope,
         log_dir=LOG_DIR,
         report_dir=REPORT_DIR,
-        domain_budgets={d: max_concurrent for d in DOMAIN_REGISTRY},
+        domain_budgets=domain_budgets,
         previous_run_id=previous_run_id,
         # Runs once, after every domain above reports in -- see
         # engine/attack_scenarios.py and analysts/mock/attack_scenario.py's
@@ -127,7 +186,6 @@ def _run_sweep(run_id: str, previous_run_id: Optional[str], domains: Optional[li
         # code's.
         attack_scenario_fn=mock_attack_scenario.synthesize,
     )
-    specs = build_domain_specs(scope, domains=domains)
     return orchestrator.run(specs)
 
 
@@ -256,14 +314,14 @@ def cmd_red_team_recon(args: argparse.Namespace) -> int:
 
     if args.authorize_active:
         _register_active_authorization(domain, args.requested_by, now)
-        scope = _red_team_scope_model()
+        scope = _merged_scope_model()
         try:
             authorization = scope.check_active_authorization(target_ref, _ACTIVE_AUTHORIZATION_ACTION)
             dns_recon._ACTIVE_AUTHORIZATION_BY_TARGET[target_ref] = authorization.authorization_ref
         except ScopeViolation as violation:
             print(f"Note: active checks not enabled — {violation.reason}", file=sys.stderr)
     else:
-        scope = _red_team_scope_model()
+        scope = _merged_scope_model()
         print(
             "Note: running passive checks only (DNS hygiene, SPF/DMARC email-auth posture, CT-log subdomain "
             "exposure). Pass --authorize-active to also run TLS/HTTP-header/exposed-path checks against the live "

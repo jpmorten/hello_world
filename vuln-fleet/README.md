@@ -335,11 +335,22 @@ Build is proceeding per the staged build order. Completed so far:
     adversary-perspective front end that feeds it, exactly like
     `supply-chain`/`firmware-hardware`/`api-surface` are the
     defender-perspective ones. It's deliberately not one of the design
-    brief's nine Tier 1 domains (not in `DOMAIN_REGISTRY`, never part of
-    `full-sweep`/`delta-sweep`): it targets an arbitrary external domain,
-    not a Stibo asset, so `engine/cli.py`'s `red-team-recon` subcommand
-    invokes it directly, the same way `cmd_target` already builds one-off
-    `DomainSpec`s for a single ad hoc target.
+    brief's nine Tier 1 domains (not in `DOMAIN_REGISTRY`): it targets an
+    arbitrary external domain, not a Stibo asset, so `engine/cli.py`'s
+    `red-team-recon` subcommand invokes it directly, the same way
+    `cmd_target` already builds one-off `DomainSpec`s for a single ad hoc
+    target. `full-sweep`/`delta-sweep` (`engine/cli.py`'s `_run_sweep`)
+    fold it in too, as a tenth domain riding alongside the registry's
+    nine: whichever domain was most recently registered via
+    `red-team-recon` (the last entry in `scope/red-team-targets.yaml`)
+    gets swept in the same run, with the same active-check gating
+    (`scope/red-team-active-authorizations.yaml`) as a standalone
+    `red-team-recon` invocation -- never assumed authorized just because
+    it's riding along. This is the purple-team payoff made concrete: a
+    full sweep's findings, and the attack-scenario-analyst pass over
+    them, can now span both an internal Stibo asset and an external
+    red-team target in the same run, the same report, the same
+    correlation pass.
 
     Two of the four things a real red-team engagement might normally
     include — active exploitation of anything discovered, and
@@ -438,6 +449,37 @@ Build is proceeding per the staged build order. Completed so far:
     the pipeline, never standing in for genuine judgement. A live
     Claude Code session running the real `attack-scenario-analyst` agent
     is the only "real" version of this stage that will ever exist.
+
+15. **Full/delta sweep folds in the last-selected red-team target** —
+    `engine/cli.py`'s `_run_sweep` (shared by `full-sweep` and
+    `delta-sweep`) now reads `scope/red-team-targets.yaml`'s last entry
+    (`_last_red_team_target()`) and, if one exists, sweeps it as a tenth
+    domain in the same `Orchestrator.run()` call as the registry's nine —
+    one run, one scope resolution, one report, rather than a second
+    invocation an operator has to remember and reconcile by hand. Active
+    checks join in only when a still-valid self-attested authorization is
+    already on file (`scope.check_active_authorization`, cleared and
+    re-checked fresh each run — never carried over as an assumption); a
+    domain with no active authorization gets swept passive-only, the same
+    honest default a bare `red-team-recon <domain>` run has always had.
+
+    This surfaced a real, pre-existing correctness bug worth fixing
+    while touching this path: `ScopeModel.resolve()` hardcoded every
+    finding's `scope_ref` to `"assets.yaml#<id>"` regardless of which
+    scope file an asset actually came from -- harmless while every asset
+    really did live in `assets.yaml`, but wrong the moment a report could
+    mix Stibo's own assets with `red-team-targets.yaml`'s. Fixed by
+    tagging each asset with its real source file at load time
+    (`engine/scope.py`); a red-team finding's `scope_ref` now correctly
+    reads `red-team-targets.yaml#red-team-<domain>`.
+
+    Verified live: a real `full-sweep` against Stibo's own scope plus the
+    already-registered `stibo.com` red-team target produced 23 findings
+    (16 from the nine Tier 1 domains + 7 from `red-team-recon`) in one
+    report, with the still-valid `stibo.com` active-check authorization
+    correctly picked up (`authorization_ref` populated on the TLS/HTTP-tier
+    findings, `null` on the passive ones) and every finding's `scope_ref`
+    correctly attributing its real source file.
 
 Not built yet: real adapters for the remaining 6 Tier 1 domains — blocked
 on real credentialed infrastructure access this exercise doesn't have,

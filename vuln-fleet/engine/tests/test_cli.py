@@ -1,3 +1,4 @@
+import json
 import os
 import re
 
@@ -130,8 +131,15 @@ def _hermetic_dns_recon_network(monkeypatch):
     """red-team-recon's own real network seams (DNS resolution, crt.sh,
     TLS handshake, HTTP requests) -- kept hermetic here the same way
     supply-chain/firmware-hardware's are, via the module's own seam
-    functions rather than duplicating dns_recon's own unit tests."""
-    monkeypatch.setattr(dns_recon, "resolve_dns_records", lambda domain: {"TXT": []})
+    functions rather than duplicating dns_recon's own unit tests.
+
+    Patches the shared low-level `_resolve` seam, not the higher-level
+    `resolve_dns_records` wrapper: analyze_dmarc() makes its own separate
+    `_resolve(f"_dmarc.{domain}", "TXT")` call that resolve_dns_records
+    never goes through, so patching only the wrapper left that one query
+    hitting a real resolver -- these tests happened to still pass because
+    real DNS was reachable, not because they were actually hermetic."""
+    monkeypatch.setattr(dns_recon, "_resolve", lambda domain, rtype: [])
     monkeypatch.setattr(
         dns_recon,
         "enumerate_subdomains_via_ct",
@@ -230,6 +238,70 @@ def test_red_team_recon_without_authorize_active_leaves_authorization_file_empty
 
     authorizations = yaml.safe_load(cli.RED_TEAM_AUTH_PATH.read_text())["authorizations"]
     assert authorizations == []
+
+
+# -- full-sweep folding in the last-selected red-team target ------------------
+
+
+def _by_domain_text(tmp_path, run_id) -> str:
+    return (tmp_path / "reports" / run_id / "by-domain.md").read_text()
+
+
+def test_full_sweep_has_no_red_team_domain_when_none_ever_registered(tmp_path):
+    cli.main(["full-sweep", "--run-id", "fs-none"])
+
+    assert "## red-team-recon" not in _by_domain_text(tmp_path, "fs-none")
+
+
+def test_full_sweep_includes_last_registered_red_team_target_passive_only(tmp_path, capsys):
+    cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--run-id", "rt-setup"])
+    capsys.readouterr()
+
+    cli.main(["full-sweep", "--run-id", "fs-with-redteam"])
+
+    text = _by_domain_text(tmp_path, "fs-with-redteam")
+    assert "## red-team-recon" in text
+    findings = json.load(open(tmp_path / "reports" / "fs-with-redteam" / "findings.json"))
+    red_team_findings = [f for f in findings if f["domain"] == "red-team-recon"]
+    assert red_team_findings  # SPF/DMARC missing findings are always produced against a domain with no records
+    assert all(f["authorization_ref"] is None for f in red_team_findings)  # no --authorize-active was ever granted
+
+
+def test_full_sweep_uses_valid_active_authorization_for_red_team_target(tmp_path, capsys):
+    cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--authorize-active", "--run-id", "rt-setup"])
+    capsys.readouterr()
+
+    cli.main(["full-sweep", "--run-id", "fs-active"])
+
+    findings = json.load(open(tmp_path / "reports" / "fs-active" / "findings.json"))
+    red_team_findings = [f for f in findings if f["domain"] == "red-team-recon"]
+    assert any(f["authorization_ref"] is not None for f in red_team_findings)
+
+
+def test_full_sweep_uses_the_most_recently_registered_red_team_target(tmp_path, capsys):
+    cli.main(["red-team-recon", "example.com", "--requested-by", "a@example.com", "--run-id", "rt-1"])
+    capsys.readouterr()
+    cli.main(["red-team-recon", "example.org", "--requested-by", "b@example.com", "--run-id", "rt-2"])
+    capsys.readouterr()
+
+    cli.main(["full-sweep", "--run-id", "fs-latest"])
+
+    findings = json.load(open(tmp_path / "reports" / "fs-latest" / "findings.json"))
+    red_team_findings = [f for f in findings if f["domain"] == "red-team-recon"]
+    assert red_team_findings
+    assert all(f["location"]["ref"] == "domain:example.org" for f in red_team_findings)
+
+
+def test_full_sweep_red_team_finding_scope_ref_names_the_red_team_file(tmp_path, capsys):
+    cli.main(["red-team-recon", "example.com", "--requested-by", "tester@example.com", "--run-id", "rt-setup"])
+    capsys.readouterr()
+
+    cli.main(["full-sweep", "--run-id", "fs-scope-ref"])
+
+    findings = json.load(open(tmp_path / "reports" / "fs-scope-ref" / "findings.json"))
+    red_team_findings = [f for f in findings if f["domain"] == "red-team-recon"]
+    assert red_team_findings
+    assert all(f["scope_ref"].startswith("red-team-targets.yaml#") for f in red_team_findings)
 
 
 def test_kill_command_writes_flag_for_most_recent_active_run(capsys, tmp_path):

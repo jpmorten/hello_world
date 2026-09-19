@@ -138,6 +138,13 @@ class ScopeModel:
                     raise ScopeConfigError(
                         f"asset {asset['asset_id']!r} has invalid criticality {asset['criticality']!r}"
                     )
+                # Recorded so resolve()'s scope_ref names the file this
+                # asset actually came from -- with assets_path now
+                # possibly a list (red-team-recon's own targets file
+                # merged alongside assets.yaml), a hardcoded "assets.yaml"
+                # would misattribute every red-team finding's scope_ref to
+                # a file it was never in.
+                asset = dict(asset, _scope_source=assets_path.name)
                 self.assets.append(asset)
 
         exclusions_doc = _read_yaml_mapping(exclusions_path)
@@ -172,7 +179,7 @@ class ScopeModel:
                     asset_type=asset["type"],
                     criticality=asset["criticality"],
                     owner_team=asset["owner_team"],
-                    scope_ref=f"assets.yaml#{asset['asset_id']}",
+                    scope_ref=f"{asset.get('_scope_source', 'assets.yaml')}#{asset['asset_id']}",
                 )
         raise ScopeViolation(target_ref, "does not resolve to any asset in scope/assets.yaml")
 
