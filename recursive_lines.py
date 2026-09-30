@@ -1,11 +1,15 @@
 """Recursive line drawing with threads.
 
 The program asks how many generations of descendants to spawn. A first
-thread draws a 1 cm line. When it reaches the end, it spawns two descendant
-threads. Each one draws a 1 cm line at +/-22.5 degrees from its parent's
-direction, so the two children are 45 degrees apart. Every descendant does the
-same until the requested number of generations is reached. Then the
-program stops.
+thread draws a 6 cm line. When it reaches the end, it spawns two descendant
+threads. Each one draws a line that is 10% shorter than its parent's, at
++/-22.5 degrees from its parent's direction (45 degrees between the two).
+Each later generation shortens its line by another 10% and turns
+1 degree less than its parent did (21.5, 20.5, ...). This repeats until the
+requested number of generations is reached. Then the program stops.
+
+If the whole tree would not fit in the window at true size, it is scaled
+down to fit, and the status bar shows the scale.
 
 Tkinter is not thread-safe, so worker threads never touch the canvas.
 They put line segments on a queue, and the GUI thread draws them.
@@ -18,11 +22,48 @@ import time
 import tkinter as tk
 from tkinter import simpledialog
 
-BRANCH_ANGLE = 22.5          # degrees each child deviates from its parent
-STEPS_PER_LINE = 20          # animation steps used to draw one 1 cm line
+START_LENGTH_CM = 6.0        # length of the first line
+LENGTH_FACTOR = 0.9          # each generation is 10% shorter than its parent
+START_ANGLE = 22.5           # degrees the first descendants deviate from the first line
+ANGLE_DECREMENT = 1.0        # each later generation turns this many degrees less
+STEPS_PER_LINE = 20          # animation steps used to draw one line
 STEP_DELAY = 0.02            # seconds between animation steps
 MAX_GENERATIONS = 14         # 2**15 - 1 threads in total at the maximum
 WINDOW_W, WINDOW_H = 1000, 800
+MARGIN = 20                  # pixels kept free around the tree
+
+
+def line_length_cm(generation):
+    """Length of a line drawn by a thread of the given generation (0 = first line)."""
+    return START_LENGTH_CM * LENGTH_FACTOR ** generation
+
+
+def branch_angle(generation):
+    """Degrees a thread of the given generation (>= 1) turns from its parent."""
+    return max(0.0, START_ANGLE - ANGLE_DECREMENT * (generation - 1))
+
+
+def tree_extent_cm(generations):
+    """Bounding box (min_x, max_x, min_y, max_y) in cm of the finished tree.
+
+    The first line starts at (0, 0) and points up (+y).
+    """
+    min_x = max_x = min_y = max_y = 0.0
+
+    def walk(x, y, angle, generation):
+        nonlocal min_x, max_x, min_y, max_y
+        rad = math.radians(angle)
+        length = line_length_cm(generation)
+        x, y = x + math.cos(rad) * length, y + math.sin(rad) * length
+        min_x, max_x = min(min_x, x), max(max_x, x)
+        min_y, max_y = min(min_y, y), max(max_y, y)
+        if generation < generations:
+            turn = branch_angle(generation + 1)
+            walk(x, y, angle + turn, generation + 1)
+            walk(x, y, angle - turn, generation + 1)
+
+    walk(0.0, 0.0, 90.0, 0)
+    return min_x, max_x, min_y, max_y
 
 
 class TreeDrawer:
@@ -39,12 +80,24 @@ class TreeDrawer:
         self.status = tk.Label(root, anchor="w")
         self.status.pack(fill="x")
 
-        # Ask Tk for the number of pixels in 1 cm on this screen.
-        self.cm = root.winfo_fpixels("1c")
+        # Ask Tk for the number of pixels in 1 cm on this screen, then shrink
+        # that if needed so the whole tree fits in the window.
+        true_cm = root.winfo_fpixels("1c")
+        min_x, max_x, min_y, max_y = tree_extent_cm(generations)
+        fit_cm = min(
+            (WINDOW_W - 2 * MARGIN) / (max_x - min_x or 1),
+            (WINDOW_H - 2 * MARGIN) / (max_y - min_y),
+        )
+        self.cm = min(true_cm, fit_cm)
+        self.scale = self.cm / true_cm
+        # Place the first line's start so the tree's bounding box is centred
+        # horizontally and its lowest point rests on the bottom margin.
+        self.start_x = WINDOW_W / 2 - (min_x + max_x) / 2 * self.cm
+        self.start_y = WINDOW_H - MARGIN + min_y * self.cm
 
     def start(self):
-        # The first line starts at the bottom centre and points straight up.
-        self.spawn(WINDOW_W / 2, WINDOW_H - 20, 90.0, 0)
+        # The first line starts at the bottom and points straight up.
+        self.spawn(self.start_x, self.start_y, 90.0, 0)
         self.root.after(15, self.pump)
 
     def spawn(self, x, y, angle, generation):
@@ -56,11 +109,12 @@ class TreeDrawer:
         ).start()
 
     def draw_line(self, x, y, angle, generation):
-        """Thread body: draw a 1 cm line step by step, then spawn two children."""
+        """Thread body: draw this generation's line step by step, then spawn two children."""
         try:
             rad = math.radians(angle)
-            dx = math.cos(rad) * self.cm / STEPS_PER_LINE
-            dy = -math.sin(rad) * self.cm / STEPS_PER_LINE  # screen y points down
+            step = line_length_cm(generation) * self.cm / STEPS_PER_LINE
+            dx = math.cos(rad) * step
+            dy = -math.sin(rad) * step  # screen y points down
             for _ in range(STEPS_PER_LINE):
                 nx, ny = x + dx, y + dy
                 self.segments.put((x, y, nx, ny, generation))
@@ -68,8 +122,9 @@ class TreeDrawer:
                 time.sleep(STEP_DELAY)
 
             if generation < self.generations:
-                self.spawn(x, y, angle + BRANCH_ANGLE, generation + 1)
-                self.spawn(x, y, angle - BRANCH_ANGLE, generation + 1)
+                turn = branch_angle(generation + 1)
+                self.spawn(x, y, angle + turn, generation + 1)
+                self.spawn(x, y, angle - turn, generation + 1)
         finally:
             with self.lock:
                 self.active_threads -= 1
@@ -96,7 +151,8 @@ class TreeDrawer:
         if active == 0 and self.segments.empty():
             self.status.config(
                 text=f"Done: {total} threads drew {total} lines "
-                f"({self.generations} generations of descendants). Close the window to exit."
+                f"({self.generations} generations of descendants), "
+                f"drawn at {self.scale:.0%} of true size. Close the window to exit."
             )
             return  # stop polling; all threads are finished
         self.status.config(text=f"Running: {active} active threads, {total} spawned so far")
