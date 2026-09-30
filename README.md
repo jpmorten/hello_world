@@ -16,3 +16,5 @@ it is scaled down to fit, and the status bar shows the scale.
 Run it with Python 3 and tkinter (`sudo apt install python3-tk` on Debian/Ubuntu):
 
     python3 recursive_lines.py
+
+![Example with 10 generations](screenshot.png)
