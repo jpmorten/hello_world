@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vuln-fleet.stibo.internal/schema/attack_scenario.schema.json",
+  "title": "AttackScenario",
+  "description": "A white-hat analyst's PREDICTION of how a real attacker could chain two or more of this run's already-gathered findings into a larger compromise. Never a record of anything tested, attempted, or validated -- `status` is locked to the single value \"predicted\" for exactly that reason: there is no schema-legal way to mark a scenario as confirmed, exploited, or otherwise acted upon. Produced once per run, after every Tier 1 domain's findings are in (engine/attack_scenarios.py), by adapters.mock.attack_scenario (a labeled placeholder) or a live attack-scenario-analyst agent (.claude/agents/attack-scenario-analyst.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scenario_id",
+    "run_id",
+    "title",
+    "attacker_goal",
+    "narrative",
+    "attack_path",
+    "chained_finding_ids",
+    "likelihood",
+    "confidence",
+    "potential_impact",
+    "mitre_attack_techniques",
+    "status",
+    "evidence_ref"
+  ],
+  "properties": {
+    "scenario_id": {
+      "type": "string",
+      "description": "Deterministic fingerprint: sha256 of (run_id, sorted chained_finding_ids, title). Computed by engine/attack_scenarios.py, never by agent judgement.",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "attacker_goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What a real attacker following this chain would be trying to achieve, e.g. 'exfiltrate customer PII from the analytics data lake'."
+    },
+    "narrative": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Prose walkthrough of the predicted chain, written from the attacker's perspective, in the future/conditional tense (would, could) -- never past/present tense implying it happened."
+    },
+    "attack_path": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Ordered steps of the predicted chain.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step", "description", "based_on_finding_id"],
+        "properties": {
+          "step": { "type": "integer", "minimum": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "based_on_finding_id": {
+            "type": ["string", "null"],
+            "description": "The finding_id (from this same run) this step is grounded in, or null for a step describing generic attacker tradecraft (e.g. 'pivot using the harvested credential') that isn't itself one of this run's findings.",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "chained_finding_ids": {
+      "type": "array",
+      "description": "The real finding_ids (from this same run's deduplicated finding set) this scenario chains together. At least two: a single finding is just a finding, not a scenario. engine/attack_scenarios.py verifies every id here actually exists in the run before accepting the scenario -- a reference to a finding_id that doesn't exist is a fabrication, not a prediction, and is rejected rather than reported.",
+      "minItems": 2,
+      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    },
+    "likelihood": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "description": "Qualitative analyst judgement, deliberately not a fabricated-precision probability like EPSS -- this is prediction, not measurement."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "The analyst's own confidence that this chain is a plausible attack path given the evidence, distinct from `likelihood` (how likely an attacker is to pursue it)."
+    },
+    "potential_impact": { "type": "string", "minLength": 1 },
+    "mitre_attack_techniques": {
+      "type": "array",
+      "description": "ATT&CK technique/sub-technique IDs, only when the analyst can genuinely map a step to one -- an empty array is honest when none apply cleanly, not a gap to fill with a guess.",
+      "items": { "type": "string", "pattern": "^T\\d{4}(\\.\\d{3})?$" }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["predicted"],
+      "description": "Fixed to the single allowed value. There is intentionally no schema-legal way to express 'confirmed', 'validated', or 'exploited' here -- this fleet does not attempt, test, or validate a predicted scenario, ever."
+    },
+    "evidence_ref": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Pointers into the chained findings' own evidence -- never new evidence from an attempt, since none is ever made."
+    }
+  }
+}

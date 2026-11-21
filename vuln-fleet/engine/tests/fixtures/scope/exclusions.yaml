@@ -1,0 +1,3 @@
+exclusions:
+  - pattern: "host:*.customerprod.example.com"
+    reason: "Customer production tenant — never touch."

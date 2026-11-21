@@ -1,0 +1,14 @@
+# CostCop's declared spend policy for this fleet -- read by
+# engine/token_budget.py, never invented at runtime. Changing the policy
+# means editing this file (and getting it reviewed), not a live agent
+# deciding a new number on the fly.
+#
+# budget_tokens: the token allowance this policy covers (a monthly/
+# engagement allowance for the fleet's live-agent runs -- Tier 1/Tier 0.5/
+# Tier G subagent sessions -- not the deterministic engine/adapter code,
+# which makes no model calls at all).
+# alert_threshold_pct: CostCop raises cost.alert (and Warden's verdict
+# moves to at least "warning") once remaining budget drops below this
+# percentage of budget_tokens.
+budget_tokens: 5000000
+alert_threshold_pct: 20

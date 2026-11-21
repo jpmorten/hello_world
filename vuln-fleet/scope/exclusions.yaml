@@ -1,0 +1,16 @@
+# Never-touch targets.
+#
+# Checked BEFORE asset resolution: a match here refuses the target even if
+# it would otherwise resolve to an in-scope asset. `pattern` is an
+# fnmatch-style glob over the same target-ref strings used in assets.yaml
+# (repo:, host:, ip:, endpoint:, cidr:).
+#
+# EXAMPLE DATA — placeholder patterns, not real customer or vendor hosts.
+
+exclusions:
+  - pattern: "host:*.customerprod.example.com"
+    reason: "Customer production tenant — never touch, no exceptions."
+  - pattern: "endpoint:*.salesforce.com"
+    reason: "Third-party SaaS — outside the vendor's ToS for scanning."
+  - pattern: "endpoint:*.workday.com"
+    reason: "Third-party SaaS (HR/People systems) — vendor-managed, out of scope."
